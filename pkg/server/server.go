@@ -14,6 +14,7 @@ import (
 	"github.com/duonghiepit/platform-controller/pkg/model"
 	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
 	"github.com/duonghiepit/platform-controller/pkg/vault"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // Config holds the configuration for the HTTP daemon server.
@@ -199,6 +200,8 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB payload limit
+
 	var req ClusterJoinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Warn("Failed to decode cluster join request", slog.String("error", err.Error()))
@@ -290,6 +293,8 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB payload limit
+
 	var req SecretSyncRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Warn("Failed to decode secret sync request", slog.String("error", err.Error()))
@@ -367,13 +372,56 @@ func (s *Server) applyConfigs(ctx context.Context, configs []*model.NamespaceCon
 		if err != nil {
 			return totalSynced, fmt.Errorf("render failed for %s: %w", cfg.Namespace, err)
 		}
-
-		for _, m := range manifests {
-			if err := s.applier.ApplyObject(ctx, m); err != nil {
-				return totalSynced, fmt.Errorf("apply failed for %s/%s: %w", m.GetKind(), m.GetName(), err)
-			}
-			totalSynced++
+		if len(manifests) == 0 {
+			continue
 		}
+
+		// 1. Apply SecretStore first sequentially (required dependency for ExternalSecrets)
+		if err := s.applier.ApplyObject(ctx, manifests[0]); err != nil {
+			return totalSynced, fmt.Errorf("apply failed for %s/%s: %w", manifests[0].GetKind(), manifests[0].GetName(), err)
+		}
+		totalSynced++
+
+		// 2. Concurrently apply remaining manifests (ExternalSecrets & SecretProviderClasses)
+		remaining := manifests[1:]
+		if len(remaining) == 0 {
+			continue
+		}
+
+		concurrency := 5
+		if len(remaining) < concurrency {
+			concurrency = len(remaining)
+		}
+
+		sem := make(chan struct{}, concurrency)
+		errCh := make(chan error, len(remaining))
+		var wg sync.WaitGroup
+
+		for _, m := range remaining {
+			wg.Add(1)
+			go func(obj *unstructured.Unstructured) {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					errCh <- ctx.Err()
+					return
+				}
+
+				if err := s.applier.ApplyObject(ctx, obj); err != nil {
+					errCh <- fmt.Errorf("apply failed for %s/%s: %w", obj.GetKind(), obj.GetName(), err)
+				}
+			}(m)
+		}
+
+		wg.Wait()
+		close(errCh)
+
+		if applyErr := <-errCh; applyErr != nil {
+			return totalSynced, applyErr
+		}
+		totalSynced += len(remaining)
 	}
 	return totalSynced, nil
 }

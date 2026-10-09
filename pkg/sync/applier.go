@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 )
 
 // Applier handles applying unstructured Kubernetes resources to the cluster.
@@ -21,7 +22,7 @@ func NewApplier(client dynamic.Interface) *Applier {
 	return &Applier{client: client}
 }
 
-// ApplyObject creates or updates an unstructured object in the cluster.
+// ApplyObject creates or updates an unstructured object in the cluster with automatic retry on conflict.
 func (a *Applier) ApplyObject(ctx context.Context, obj *unstructured.Unstructured) error {
 	gvr := getGVRForObject(obj)
 	if gvr.Resource == "" {
@@ -33,26 +34,29 @@ func (a *Applier) ApplyObject(ctx context.Context, obj *unstructured.Unstructure
 
 	resClient := a.client.Resource(gvr).Namespace(namespace)
 
-	existing, err := resClient.Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			_, err := resClient.Create(ctx, obj, metav1.CreateOptions{})
-			if err != nil {
-				return fmt.Errorf("failed to create %s/%s: %w", obj.GetKind(), name, err)
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		existing, err := resClient.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				_, createErr := resClient.Create(ctx, obj, metav1.CreateOptions{})
+				if createErr != nil {
+					return fmt.Errorf("failed to create %s/%s: %w", obj.GetKind(), name, createErr)
+				}
+				return nil
 			}
-			return nil
+			return fmt.Errorf("failed to get existing %s/%s: %w", obj.GetKind(), name, err)
 		}
-		return fmt.Errorf("failed to get existing %s/%s: %w", obj.GetKind(), name, err)
-	}
 
-	// Update existing resource
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	_, err = resClient.Update(ctx, obj, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to update %s/%s: %w", obj.GetKind(), name, err)
-	}
+		// Update existing resource with latest resourceVersion
+		toUpdate := obj.DeepCopy()
+		toUpdate.SetResourceVersion(existing.GetResourceVersion())
+		_, err = resClient.Update(ctx, toUpdate, metav1.UpdateOptions{})
+		if err != nil {
+			return err // Triggers retry if conflict (409)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func getGVRForObject(obj *unstructured.Unstructured) schema.GroupVersionResource {

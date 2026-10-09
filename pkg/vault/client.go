@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
 )
@@ -13,9 +14,11 @@ type Client struct {
 	client *vaultapi.Client
 }
 
-// NewClient initializes a new Vault API client.
+// NewClient initializes a new Vault API client with automatic retries and timeout.
 func NewClient(address, token string) (*Client, error) {
 	config := vaultapi.DefaultConfig()
+	config.MaxRetries = 3
+	config.Timeout = 30 * time.Second
 	if address != "" {
 		config.Address = address
 	}
