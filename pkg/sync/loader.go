@@ -14,7 +14,10 @@ import (
 func LoadClusterConfigs(registryPath, clusterName, nsFilter string) ([]*model.NamespaceConfig, error) {
 	clusterDir := filepath.Join(registryPath, "clusters", clusterName)
 	if _, err := os.Stat(clusterDir); err != nil {
-		return nil, fmt.Errorf("cluster directory not found: %s: %w", clusterDir, err)
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to stat cluster directory %s: %w", clusterDir, err)
 	}
 
 	files, err := os.ReadDir(clusterDir)

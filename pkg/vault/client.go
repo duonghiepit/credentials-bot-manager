@@ -103,3 +103,42 @@ func (c *Client) VerifyHealth(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ListSecretKeys lists all secret keys in a KV-v2 engine under mountPath/metadata/folderPath.
+func (c *Client) ListSecretKeys(ctx context.Context, mountPath, folderPath string) ([]string, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("vault client is not initialized")
+	}
+	path := fmt.Sprintf("%s/metadata/%s", mountPath, folderPath)
+	secret, err := c.client.Logical().ListWithContext(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list vault secret keys at %s: %w", path, err)
+	}
+	if secret == nil || secret.Data == nil {
+		return nil, nil
+	}
+	rawKeys, ok := secret.Data["keys"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+	var keys []string
+	for _, k := range rawKeys {
+		if str, ok := k.(string); ok {
+			keys = append(keys, str)
+		}
+	}
+	return keys, nil
+}
+
+// PurgeSecretMetadata permanently purges secret metadata and all historical versions in Vault KV-v2.
+func (c *Client) PurgeSecretMetadata(ctx context.Context, mountPath, folderPath, secretName string) error {
+	if c == nil || c.client == nil {
+		return fmt.Errorf("vault client is not initialized")
+	}
+	path := fmt.Sprintf("%s/metadata/%s/%s", mountPath, folderPath, secretName)
+	_, err := c.client.Logical().DeleteWithContext(ctx, path)
+	if err != nil {
+		return fmt.Errorf("failed to purge vault secret metadata at %s: %w", path, err)
+	}
+	return nil
+}
