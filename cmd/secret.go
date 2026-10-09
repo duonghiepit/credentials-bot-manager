@@ -97,11 +97,18 @@ func runSecretSync(cmd *cobra.Command, args []string) error {
 				}
 				fmt.Printf("---\n# Resource: %s/%s\n%s\n", m.GetKind(), m.GetName(), yamlStr)
 			} else {
-				fmt.Printf("   Applying %-22s %s... ", m.GetKind(), m.GetName())
-				if err := applier.ApplyObject(ctx, m); err != nil {
+				action, err := applier.ApplyObject(ctx, m)
+				if err != nil {
 					return fmt.Errorf("failed to apply %s/%s: %w", m.GetKind(), m.GetName(), err)
 				}
-				fmt.Println("✅ Synced")
+				switch action {
+				case sync.ActionCreated:
+					fmt.Println("✨ Created")
+				case sync.ActionUpdated:
+					fmt.Println("🔄 Updated")
+				case sync.ActionUnchanged:
+					fmt.Println("⏭️  Unchanged (Skipped)")
+				}
 			}
 		}
 	}

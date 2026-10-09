@@ -286,6 +286,14 @@ type SecretSyncRequest struct {
 	Secrets     *model.SecretsConfig `json:"secrets,omitempty"`
 }
 
+// SyncStats encapsulates the granular outcomes of a secret synchronization cycle.
+type SyncStats struct {
+	Total     int `json:"total"`
+	Created   int `json:"created"`
+	Updated   int `json:"updated"`
+	Unchanged int `json:"unchanged"`
+}
+
 func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 	log := logger.L()
 	if r.Method != http.MethodPost {
@@ -345,7 +353,7 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	syncedCount, err := s.applyConfigs(ctx, configs, req.VaultServer)
+	stats, err := s.applyConfigs(ctx, configs, req.VaultServer)
 	if err != nil {
 		log.Error("Secret sync failed", slog.String("error", err.Error()))
 		http.Error(w, fmt.Sprintf("sync failed: %v", err), http.StatusInternalServerError)
@@ -354,33 +362,56 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("Secret sync completed successfully",
 		slog.String("cluster", req.ClusterName),
-		slog.Int("synced_objects", syncedCount),
+		slog.Int("total", stats.Total),
+		slog.Int("created", stats.Created),
+		slog.Int("updated", stats.Updated),
+		slog.Int("unchanged", stats.Unchanged),
 	)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":         "success",
 		"cluster":        req.ClusterName,
-		"synced_objects": syncedCount,
+		"synced_objects": stats.Total,
+		"created":        stats.Created,
+		"updated":        stats.Updated,
+		"unchanged":      stats.Unchanged,
 	})
 }
 
-func (s *Server) applyConfigs(ctx context.Context, configs []*model.NamespaceConfig, vaultServer string) (int, error) {
-	totalSynced := 0
+func (s *Server) applyConfigs(ctx context.Context, configs []*model.NamespaceConfig, vaultServer string) (*SyncStats, error) {
+	stats := &SyncStats{}
+	var mu sync.Mutex
+
+	recordAction := func(action syncpkg.ApplyAction) {
+		mu.Lock()
+		defer mu.Unlock()
+		stats.Total++
+		switch action {
+		case syncpkg.ActionCreated:
+			stats.Created++
+		case syncpkg.ActionUpdated:
+			stats.Updated++
+		case syncpkg.ActionUnchanged:
+			stats.Unchanged++
+		}
+	}
+
 	for _, cfg := range configs {
 		manifests, err := syncpkg.RenderAllForNamespace(cfg, vaultServer)
 		if err != nil {
-			return totalSynced, fmt.Errorf("render failed for %s: %w", cfg.Namespace, err)
+			return stats, fmt.Errorf("render failed for %s: %w", cfg.Namespace, err)
 		}
 		if len(manifests) == 0 {
 			continue
 		}
 
 		// 1. Apply SecretStore first sequentially (required dependency for ExternalSecrets)
-		if err := s.applier.ApplyObject(ctx, manifests[0]); err != nil {
-			return totalSynced, fmt.Errorf("apply failed for %s/%s: %w", manifests[0].GetKind(), manifests[0].GetName(), err)
+		action, err := s.applier.ApplyObject(ctx, manifests[0])
+		if err != nil {
+			return stats, fmt.Errorf("apply failed for %s/%s: %w", manifests[0].GetKind(), manifests[0].GetName(), err)
 		}
-		totalSynced++
+		recordAction(action)
 
 		// 2. Concurrently apply remaining manifests (ExternalSecrets & SecretProviderClasses)
 		remaining := manifests[1:]
@@ -409,9 +440,12 @@ func (s *Server) applyConfigs(ctx context.Context, configs []*model.NamespaceCon
 					return
 				}
 
-				if err := s.applier.ApplyObject(ctx, obj); err != nil {
+				act, err := s.applier.ApplyObject(ctx, obj)
+				if err != nil {
 					errCh <- fmt.Errorf("apply failed for %s/%s: %w", obj.GetKind(), obj.GetName(), err)
+					return
 				}
+				recordAction(act)
 			}(m)
 		}
 
@@ -419,17 +453,16 @@ func (s *Server) applyConfigs(ctx context.Context, configs []*model.NamespaceCon
 		close(errCh)
 
 		if applyErr := <-errCh; applyErr != nil {
-			return totalSynced, applyErr
+			return stats, applyErr
 		}
-		totalSynced += len(remaining)
 	}
-	return totalSynced, nil
+	return stats, nil
 }
 
-func (s *Server) syncSecrets(ctx context.Context, clusterName, nsFilter, vaultServer string) (int, error) {
+func (s *Server) syncSecrets(ctx context.Context, clusterName, nsFilter, vaultServer string) (*SyncStats, error) {
 	configs, err := syncpkg.LoadClusterConfigs(s.cfg.RegistryPath, clusterName, nsFilter)
 	if err != nil {
-		return 0, fmt.Errorf("failed to load configs: %w", err)
+		return nil, fmt.Errorf("failed to load configs: %w", err)
 	}
 	return s.applyConfigs(ctx, configs, vaultServer)
 }
@@ -452,11 +485,16 @@ func (s *Server) runReconciler(ctx context.Context) {
 			log.Info("Auto-reconciler stopping...")
 			return
 		case <-ticker.C:
-			count, err := s.syncSecrets(ctx, s.cfg.ClusterName, "", s.cfg.VaultServer)
+			stats, err := s.syncSecrets(ctx, s.cfg.ClusterName, "", s.cfg.VaultServer)
 			if err != nil {
 				log.Warn("Reconciler cycle encountered error", slog.String("error", err.Error()))
 			} else {
-				log.Info("Reconciler cycle completed", slog.Int("synced_objects", count))
+				log.Info("Reconciler cycle completed",
+					slog.Int("total", stats.Total),
+					slog.Int("created", stats.Created),
+					slog.Int("updated", stats.Updated),
+					slog.Int("unchanged", stats.Unchanged),
+				)
 			}
 		}
 	}
