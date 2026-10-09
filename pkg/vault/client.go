@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
+	"os"
 
 	vaultapi "github.com/hashicorp/vault/api"
 )
@@ -26,6 +27,31 @@ func NewClient(address, token string) (*Client, error) {
 
 	if token != "" {
 		client.SetToken(token)
+	} else {
+		// Attempt in-cluster Kubernetes ServiceAccount authentication if running in a Pod
+		jwtPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		if _, err := os.Stat(jwtPath); err == nil {
+			jwtBytes, err := os.ReadFile(jwtPath)
+			if err == nil {
+				role := os.Getenv("VAULT_K8S_ROLE")
+				if role == "" {
+					role = "platform-controller"
+				}
+				mount := os.Getenv("VAULT_K8S_MOUNT")
+				if mount == "" {
+					mount = "kubernetes"
+				}
+				path := fmt.Sprintf("auth/%s/login", mount)
+				data := map[string]interface{}{
+					"role": role,
+					"jwt":  string(jwtBytes),
+				}
+				secret, err := client.Logical().Write(path, data)
+				if err == nil && secret != nil && secret.Auth != nil {
+					client.SetToken(secret.Auth.ClientToken)
+				}
+			}
+		}
 	}
 
 	return &Client{client: client}, nil

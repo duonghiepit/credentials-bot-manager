@@ -11,6 +11,7 @@ import (
 
 	"github.com/duonghiepit/platform-controller/pkg/k8s"
 	"github.com/duonghiepit/platform-controller/pkg/logger"
+	"github.com/duonghiepit/platform-controller/pkg/model"
 	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
 	"github.com/duonghiepit/platform-controller/pkg/vault"
 )
@@ -276,9 +277,10 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 
 // SecretSyncRequest payload for /api/v1/secret/sync.
 type SecretSyncRequest struct {
-	ClusterName string `json:"cluster_name"`
-	Namespace   string `json:"namespace"`
-	VaultServer string `json:"vault_server"`
+	ClusterName string               `json:"cluster_name"`
+	Namespace   string               `json:"namespace"`
+	VaultServer string               `json:"vault_server,omitempty"`
+	Secrets     *model.SecretsConfig `json:"secrets,omitempty"`
 }
 
 func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +319,28 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Minute)
 	defer cancel()
 
-	syncedCount, err := s.syncSecrets(ctx, req.ClusterName, req.Namespace, req.VaultServer)
+	var configs []*model.NamespaceConfig
+	if req.Secrets != nil {
+		if req.Namespace == "" {
+			http.Error(w, "namespace is required when secrets payload is provided", http.StatusBadRequest)
+			return
+		}
+		configs = append(configs, &model.NamespaceConfig{
+			ClusterName: req.ClusterName,
+			Namespace:   req.Namespace,
+			Secrets:     *req.Secrets,
+		})
+	} else {
+		var err error
+		configs, err = syncpkg.LoadClusterConfigs(s.cfg.RegistryPath, req.ClusterName, req.Namespace)
+		if err != nil {
+			log.Error("Failed to load configs from registry", slog.String("error", err.Error()))
+			http.Error(w, fmt.Sprintf("failed to load configs: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	syncedCount, err := s.applyConfigs(ctx, configs, req.VaultServer)
 	if err != nil {
 		log.Error("Secret sync failed", slog.String("error", err.Error()))
 		http.Error(w, fmt.Sprintf("sync failed: %v", err), http.StatusInternalServerError)
@@ -337,12 +360,7 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) syncSecrets(ctx context.Context, clusterName, nsFilter, vaultServer string) (int, error) {
-	configs, err := syncpkg.LoadClusterConfigs(s.cfg.RegistryPath, clusterName, nsFilter)
-	if err != nil {
-		return 0, fmt.Errorf("failed to load configs: %w", err)
-	}
-
+func (s *Server) applyConfigs(ctx context.Context, configs []*model.NamespaceConfig, vaultServer string) (int, error) {
 	totalSynced := 0
 	for _, cfg := range configs {
 		manifests, err := syncpkg.RenderAllForNamespace(cfg, vaultServer)
@@ -357,8 +375,15 @@ func (s *Server) syncSecrets(ctx context.Context, clusterName, nsFilter, vaultSe
 			totalSynced++
 		}
 	}
-
 	return totalSynced, nil
+}
+
+func (s *Server) syncSecrets(ctx context.Context, clusterName, nsFilter, vaultServer string) (int, error) {
+	configs, err := syncpkg.LoadClusterConfigs(s.cfg.RegistryPath, clusterName, nsFilter)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load configs: %w", err)
+	}
+	return s.applyConfigs(ctx, configs, vaultServer)
 }
 
 func (s *Server) runReconciler(ctx context.Context) {

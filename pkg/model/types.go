@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,27 @@ func (s *SecretsConfig) UnmarshalYAML(value *yaml.Node) error {
 	default:
 		return fmt.Errorf("unexpected yaml node kind for secrets: %v", value.Kind)
 	}
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to support both:
+// 1. Map format: {"es": [...], "csi": [...]}
+// 2. Flat list: [...] (automatically classified as ES)
+func (s *SecretsConfig) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		s.ES = list
+		s.CSI = nil
+		return nil
+	}
+
+	type alias SecretsConfig
+	var aux alias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	s.ES = aux.ES
+	s.CSI = aux.CSI
+	return nil
 }
 
 // AllSecrets returns a consolidated list of all secret names.
