@@ -91,35 +91,6 @@ func RenderExternalSecret(namespace, secretName string) *unstructured.Unstructur
 	return obj
 }
 
-// RenderSecretProviderClass generates a SecretProviderClass object for CSI secrets.
-func RenderSecretProviderClass(clusterName, namespace, vaultServer string, secrets []string) *unstructured.Unstructured {
-	spcName := fmt.Sprintf("vault-%s-csi", namespace)
-
-	var objectsYaml strings.Builder
-	for _, sec := range secrets {
-		objectsYaml.WriteString(fmt.Sprintf("  - objectName: \"%s\"\n", sec))
-		objectsYaml.WriteString(fmt.Sprintf("    secretPath: \"kv2-%s/data/%s/%s\"\n", clusterName, namespace, sec))
-	}
-
-	obj := &unstructured.Unstructured{}
-	obj.SetAPIVersion("secrets-store.csi.x-k8s.io/v1")
-	obj.SetKind("SecretProviderClass")
-	obj.SetName(spcName)
-	obj.SetNamespace(namespace)
-
-	spec := map[string]interface{}{
-		"provider": "vault",
-		"parameters": map[string]interface{}{
-			"vaultAddress":             vaultServer,
-			"vaultKubernetesMountPath": fmt.Sprintf("%s-kubernetes", clusterName),
-			"roleName":                 fmt.Sprintf("r-%s-%s", clusterName, namespace),
-			"objects":                  objectsYaml.String(),
-		},
-	}
-	obj.Object["spec"] = spec
-	return obj
-}
-
 // RenderAllForNamespace renders all manifests for a given NamespaceConfig.
 func RenderAllForNamespace(cfg *model.NamespaceConfig, vaultServer string) ([]*unstructured.Unstructured, error) {
 	var manifests []*unstructured.Unstructured
@@ -130,11 +101,6 @@ func RenderAllForNamespace(cfg *model.NamespaceConfig, vaultServer string) ([]*u
 	// Render ExternalSecrets for each ES secret
 	for _, sec := range cfg.Secrets.ES {
 		manifests = append(manifests, RenderExternalSecret(cfg.Namespace, sec))
-	}
-
-	// Render SecretProviderClass if CSI secrets are present
-	if len(cfg.Secrets.CSI) > 0 {
-		manifests = append(manifests, RenderSecretProviderClass(cfg.ClusterName, cfg.Namespace, vaultServer, cfg.Secrets.CSI))
 	}
 
 	return manifests, nil
