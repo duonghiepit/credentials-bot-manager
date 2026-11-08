@@ -37,27 +37,6 @@ rbac:
       resources: ["secretproviderclasses"]
       verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-configMap:
-  kube-system.yaml: |
-    editors:
-      - dev.user
-    secrets:
-      es:
-        - devopspro-tls
-  infra-storage.yaml: |
-    editors:
-      - dev.user
-    secrets:
-      es:
-        - devopspro-tls
-  external-secrets.yaml: |
-    editors:
-      - dev.user
-    secrets:
-      es:
-        - devopspro-tls
-        - vault-minio-bk
-
 env:
   VAULT_ADDR: "http://vault.external-secrets.svc:8200"
   LOG_FORMAT: "json"
@@ -73,9 +52,6 @@ deploys:
       - --port=8080
       - --vault-addr=http://vault.external-secrets.svc:8200
       - --vault-server=http://vault.external-secrets.svc:8200
-      - --cluster=k3s-ha
-      - --sync-interval=30s
-      - --registry=/etc/platform-controller/registry
     resources:
       requests:
         cpu: 50m
@@ -83,9 +59,6 @@ deploys:
       limits:
         cpu: 200m
         memory: 128Mi
-    mountConfigMaps:
-      - name: platform-controller
-        mountPath: /etc/platform-controller/registry/clusters/k3s-ha
     service:
       type: ClusterIP
       port: 8080
