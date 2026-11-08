@@ -28,11 +28,12 @@ type Config struct {
 
 // Server implements the HTTP API daemon and background reconciler.
 type Server struct {
-	cfg       Config
-	k8sClient *k8s.Client
-	applier   *syncpkg.Applier
-	server    *http.Server
-	wg        sync.WaitGroup
+	cfg         Config
+	k8sClient   *k8s.Client
+	applier     *syncpkg.Applier
+	server      *http.Server
+	wg          sync.WaitGroup
+	authTracker *authAttemptTracker
 
 	tokenMu     sync.RWMutex
 	activeToken string
@@ -48,9 +49,10 @@ func NewServer(cfg Config) (*Server, error) {
 	applier := syncpkg.NewApplier(k8sClient.DynamicClient)
 
 	s := &Server{
-		cfg:       cfg,
-		k8sClient: k8sClient,
-		applier:   applier,
+		cfg:         cfg,
+		k8sClient:   k8sClient,
+		applier:     applier,
+		authTracker: newAuthAttemptTracker(),
 	}
 
 	if err := s.ensureAuthToken(context.Background()); err != nil {
@@ -64,16 +66,20 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/v1/secret/sync", s.handleSecretSync)
 	mux.HandleFunc("/api/v1/secret/unmatched", s.handleSecretUnmatched)
 	mux.HandleFunc("/api/v1/auth/rotate-token", s.handleRotateToken)
+	mux.HandleFunc("/", s.handleNotFound)
 
 	authHandler := s.authMiddleware(mux)
-	loggedHandler := loggingMiddleware(authHandler)
+	secHandler := securityHeadersMiddleware(authHandler)
+	loggedHandler := loggingMiddleware(secHandler)
 
 	s.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      loggedHandler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           loggedHandler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 14, // 16KB max headers
 	}
 
 	return s, nil
@@ -127,6 +133,16 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Error("HTTP server encountered fatal error", slog.String("error", err.Error()))
 		return err
 	}
+}
+
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // statusWriter wraps http.ResponseWriter to capture HTTP status and response size.
@@ -183,10 +199,21 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"status": "ok",
+	})
+}
+
+func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "not found",
 	})
 }

@@ -16,10 +16,10 @@ import (
 )
 
 // SecretSyncRequest payload for /api/v1/secret/sync.
+// Note: VaultServer cannot be overridden by client payload to prevent SSRF / SA token exfiltration.
 type SecretSyncRequest struct {
 	ClusterName string               `json:"cluster_name"`
 	Namespace   string               `json:"namespace"`
-	VaultServer string               `json:"vault_server,omitempty"`
 	Secrets     *model.SecretsConfig `json:"secrets,omitempty"`
 }
 
@@ -41,24 +41,31 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB payload limit
 
 	var req SecretSyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		log.Warn("Failed to decode secret sync request", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
 		return
 	}
 
 	if req.ClusterName == "" {
 		req.ClusterName = s.cfg.ClusterName
 	}
-	if req.ClusterName == "" {
-		http.Error(w, "cluster_name is required", http.StatusBadRequest)
+	if err := model.ValidateIdentifier("cluster_name", req.ClusterName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.VaultServer == "" {
-		req.VaultServer = s.cfg.VaultServer
+	if req.Namespace != "" {
+		if err := model.ValidateIdentifier("namespace", req.Namespace); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
-	if req.VaultServer == "" {
-		req.VaultServer = "http://vault.external-secrets.svc:8200"
+
+	vaultServer := s.cfg.VaultServer
+	if vaultServer == "" {
+		vaultServer = "http://vault.external-secrets.svc:8200"
 	}
 
 	log.Info("Processing secret sync request",
@@ -75,25 +82,30 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "namespace is required when secrets payload is provided", http.StatusBadRequest)
 			return
 		}
-		configs = append(configs, &model.NamespaceConfig{
+		cfg := &model.NamespaceConfig{
 			ClusterName: req.ClusterName,
 			Namespace:   req.Namespace,
 			Secrets:     *req.Secrets,
-		})
+		}
+		if err := cfg.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		configs = append(configs, cfg)
 	} else {
 		var err error
 		configs, err = syncpkg.LoadClusterConfigs(s.cfg.RegistryPath, req.ClusterName, req.Namespace)
 		if err != nil {
 			log.Error("Failed to load configs from registry", slog.String("error", err.Error()))
-			http.Error(w, fmt.Sprintf("failed to load configs: %v", err), http.StatusInternalServerError)
+			http.Error(w, "failed to load cluster configurations", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	stats, err := s.applyConfigs(ctx, configs, req.VaultServer)
+	stats, err := s.applyConfigs(ctx, configs, vaultServer)
 	if err != nil {
 		log.Error("Secret sync failed", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("sync failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, "secret synchronization failed", http.StatusInternalServerError)
 		return
 	}
 

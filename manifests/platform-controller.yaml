@@ -3,6 +3,8 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+userForNonRootSecurityContext: 65532
+
 nodeSelector:
   node-role.kubernetes.io/worker: worker
 
@@ -15,27 +17,54 @@ rbac:
   clusterWide: true
   name: platform-controller
   rules:
-    # Core RBAC & Secrets management
-    - apiGroups: [""]
-      resources: ["namespaces", "services", "serviceaccounts", "secrets", "configmaps"]
-      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-    - apiGroups: ["rbac.authorization.k8s.io"]
-      resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
-      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-    - apiGroups: ["authentication.k8s.io"]
-      resources: ["tokenreviews"]
-      verbs: ["create"]
-    - apiGroups: ["authorization.k8s.io"]
-      resources: ["subjectaccessreviews"]
-      verbs: ["create"]
-    # External Secrets Operator
+    # External Secrets Operator CRDs ONLY (Zero access to native K8s Secrets)
     - apiGroups: ["external-secrets.io"]
-      resources: ["secretstores", "clustersecretstores", "externalsecrets"]
+      resources: ["secretstores", "externalsecrets"]
       verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-    # Secrets Store CSI Driver
+    # Secrets Store CSI Driver CRDs ONLY
     - apiGroups: ["secrets-store.csi.x-k8s.io"]
       resources: ["secretproviderclasses"]
       verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  namespacedRules:
+    # Scoped strictly to platform-controller-auth in platform-system namespace
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["create"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      resourceNames: ["platform-controller-auth"]
+      verbs: ["get", "update", "patch"]
+
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow Vault API in external-secrets namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: external-secrets
+      ports:
+        - protocol: TCP
+          port: 8200
+    # Allow Kubernetes API Server
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
 
 env:
   VAULT_ADDR: "http://vault.external-secrets.svc:8200"

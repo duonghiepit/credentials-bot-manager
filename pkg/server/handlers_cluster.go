@@ -9,15 +9,16 @@ import (
 	"time"
 
 	"github.com/duonghiepit/platform-controller/pkg/logger"
+	"github.com/duonghiepit/platform-controller/pkg/model"
 	"github.com/duonghiepit/platform-controller/pkg/vault"
 )
 
 // ClusterJoinRequest payload for /api/v1/cluster/join.
+// Note: K8sHostOverride is forbidden via HTTP API to prevent SSRF / Vault Auth hijacking.
 type ClusterJoinRequest struct {
-	ClusterName     string `json:"cluster_name"`
-	Namespace       string `json:"namespace"`
-	VaultMountPath  string `json:"vault_mount_path"`
-	K8sHostOverride string `json:"k8s_host_override"`
+	ClusterName    string `json:"cluster_name"`
+	Namespace      string `json:"namespace,omitempty"`
+	VaultMountPath string `json:"vault_mount_path,omitempty"`
 }
 
 func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
@@ -30,21 +31,31 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB payload limit
 
 	var req ClusterJoinRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		log.Warn("Failed to decode cluster join request", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
 		return
 	}
 
-	if req.ClusterName == "" {
-		http.Error(w, "cluster_name is required", http.StatusBadRequest)
+	if err := model.ValidateIdentifier("cluster_name", req.ClusterName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Namespace == "" {
 		req.Namespace = "external-secrets"
 	}
+	if err := model.ValidateIdentifier("namespace", req.Namespace); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if req.VaultMountPath == "" {
 		req.VaultMountPath = fmt.Sprintf("%s-kubernetes", req.ClusterName)
+	}
+	if err := model.ValidateIdentifier("vault_mount_path", req.VaultMountPath); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	log.Info("Processing cluster join request",
@@ -59,7 +70,7 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 	creds, err := s.k8sClient.EnsureTokenReviewer(ctx, req.Namespace)
 	if err != nil {
 		log.Error("Failed to bootstrap token reviewer", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("failed to bootstrap token reviewer: %v", err), http.StatusInternalServerError)
+		http.Error(w, "failed to bootstrap token reviewer", http.StatusInternalServerError)
 		return
 	}
 
@@ -67,17 +78,12 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 	vaultClient, err := vault.NewClient(s.cfg.VaultAddr, s.cfg.VaultToken)
 	if err != nil {
 		log.Error("Failed to connect to vault", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("failed to connect to vault: %v", err), http.StatusInternalServerError)
+		http.Error(w, "failed to connect to vault", http.StatusInternalServerError)
 		return
 	}
 
-	k8sHost := s.k8sClient.Host
-	if req.K8sHostOverride != "" {
-		k8sHost = req.K8sHostOverride
-	}
-
 	payload := vault.K8sAuthConfigPayload{
-		KubernetesHost:       k8sHost,
+		KubernetesHost:       s.k8sClient.Host,
 		KubernetesCACert:     creds.CACert,
 		TokenReviewerJWT:     creds.Token,
 		DisableLocalCAJWT:    true,
@@ -86,7 +92,7 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 
 	if err := vaultClient.ConfigureKubernetesAuth(ctx, req.VaultMountPath, payload); err != nil {
 		log.Error("Failed to configure vault auth backend", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("failed to configure vault: %v", err), http.StatusInternalServerError)
+		http.Error(w, "failed to configure vault auth backend", http.StatusInternalServerError)
 		return
 	}
 
@@ -97,10 +103,8 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":       "success",
-		"cluster":      req.ClusterName,
-		"vault_mount":  req.VaultMountPath,
-		"token_length": len(creds.Token),
-		"ca_length":    len(creds.CACert),
+		"status":      "success",
+		"cluster":     req.ClusterName,
+		"vault_mount": req.VaultMountPath,
 	})
 }

@@ -100,6 +100,10 @@ func RenderExternalSecret(namespace, secretName, secretType string) *unstructure
 
 // RenderAllForNamespace renders all manifests for a given NamespaceConfig.
 func RenderAllForNamespace(cfg *model.NamespaceConfig, vaultServer string) ([]*unstructured.Unstructured, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	var manifests []*unstructured.Unstructured
 
 	// Always render SecretStore

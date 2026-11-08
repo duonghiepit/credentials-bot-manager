@@ -33,6 +33,8 @@ func (s *Server) getVaultClient() (*vault.Client, error) {
 func (s *Server) handleSecretUnmatched(w http.ResponseWriter, r *http.Request) {
 	log := logger.L()
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB payload limit
+
 	clusterName := r.URL.Query().Get("cluster")
 	nsFilter := r.URL.Query().Get("namespace")
 	target := r.URL.Query().Get("target")
@@ -41,27 +43,41 @@ func (s *Server) handleSecretUnmatched(w http.ResponseWriter, r *http.Request) {
 
 	var req UnmatchedSecretRequest
 	if r.Body != nil && r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-			if req.ClusterName != "" {
-				clusterName = req.ClusterName
-			}
-			if req.Namespace != "" {
-				nsFilter = req.Namespace
-			}
-			if req.Target != "" {
-				target = req.Target
-			}
-			if req.DryRun {
-				dryRun = true
-			}
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, "invalid request payload", http.StatusBadRequest)
+			return
+		}
+		if req.ClusterName != "" {
+			clusterName = req.ClusterName
+		}
+		if req.Namespace != "" {
+			nsFilter = req.Namespace
+		}
+		if req.Target != "" {
+			target = req.Target
+		}
+		if req.DryRun {
+			dryRun = true
 		}
 	}
 
 	if clusterName == "" {
 		clusterName = s.cfg.ClusterName
 	}
-	if clusterName == "" {
-		http.Error(w, "cluster is required (query param ?cluster= or json field)", http.StatusBadRequest)
+	if err := model.ValidateIdentifier("cluster_name", clusterName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if nsFilter != "" {
+		if err := model.ValidateIdentifier("namespace", nsFilter); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if target != "" && target != "all" && target != "k8s" && target != "vault" {
+		http.Error(w, "invalid target: must be all, k8s, or vault", http.StatusBadRequest)
 		return
 	}
 
@@ -80,11 +96,19 @@ func (s *Server) handleSecretUnmatched(w http.ResponseWriter, r *http.Request) {
 			if nsFilter != "" && ns != nsFilter {
 				continue
 			}
-			configs = append(configs, &model.NamespaceConfig{
+			if sec == nil {
+				continue
+			}
+			cfg := &model.NamespaceConfig{
 				ClusterName: clusterName,
 				Namespace:   ns,
 				Secrets:     *sec,
-			})
+			}
+			if err := cfg.Validate(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			configs = append(configs, cfg)
 		}
 		report, err = syncpkg.DetectConfigsUnmatchedSecrets(
 			ctx,
@@ -106,7 +130,7 @@ func (s *Server) handleSecretUnmatched(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Error("Failed to detect unmatched secrets", slog.String("error", err.Error()))
-		http.Error(w, fmt.Sprintf("failed to detect unmatched secrets: %v", err), http.StatusInternalServerError)
+		http.Error(w, "failed to detect unmatched secrets", http.StatusInternalServerError)
 		return
 	}
 
@@ -135,7 +159,7 @@ func (s *Server) handleSecretUnmatched(w http.ResponseWriter, r *http.Request) {
 		)
 		if err != nil {
 			log.Error("Failed to purge unmatched secrets", slog.String("error", err.Error()))
-			http.Error(w, fmt.Sprintf("failed to purge unmatched secrets: %v", err), http.StatusInternalServerError)
+			http.Error(w, "failed to purge unmatched secrets", http.StatusInternalServerError)
 			return
 		}
 
@@ -163,7 +187,7 @@ func (s *Server) handleSecretUnmatched(w http.ResponseWriter, r *http.Request) {
 			)
 			if err != nil {
 				log.Error("Failed to purge unmatched secrets", slog.String("error", err.Error()))
-				http.Error(w, fmt.Sprintf("failed to purge unmatched secrets: %v", err), http.StatusInternalServerError)
+				http.Error(w, "failed to purge unmatched secrets", http.StatusInternalServerError)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(result)

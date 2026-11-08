@@ -4,10 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
 )
+
+func validateVaultPathSegment(segment string) error {
+	if strings.Contains(segment, "..") || strings.ContainsAny(segment, `\`) {
+		return fmt.Errorf("invalid vault path segment: path traversal forbidden")
+	}
+	return nil
+}
 
 // Client wraps the HashiCorp Vault API client.
 type Client struct {
@@ -71,6 +79,9 @@ type K8sAuthConfigPayload struct {
 
 // ConfigureKubernetesAuth configures a Kubernetes auth backend mount with the cluster credentials.
 func (c *Client) ConfigureKubernetesAuth(ctx context.Context, mountPath string, payload K8sAuthConfigPayload) error {
+	if err := validateVaultPathSegment(mountPath); err != nil {
+		return err
+	}
 	path := fmt.Sprintf("auth/%s/config", mountPath)
 
 	data := map[string]interface{}{
@@ -109,6 +120,12 @@ func (c *Client) ListSecretKeys(ctx context.Context, mountPath, folderPath strin
 	if c == nil || c.client == nil {
 		return nil, fmt.Errorf("vault client is not initialized")
 	}
+	if err := validateVaultPathSegment(mountPath); err != nil {
+		return nil, err
+	}
+	if err := validateVaultPathSegment(folderPath); err != nil {
+		return nil, err
+	}
 	path := fmt.Sprintf("%s/metadata/%s", mountPath, folderPath)
 	secret, err := c.client.Logical().ListWithContext(ctx, path)
 	if err != nil {
@@ -134,6 +151,15 @@ func (c *Client) ListSecretKeys(ctx context.Context, mountPath, folderPath strin
 func (c *Client) PurgeSecretMetadata(ctx context.Context, mountPath, folderPath, secretName string) error {
 	if c == nil || c.client == nil {
 		return fmt.Errorf("vault client is not initialized")
+	}
+	if err := validateVaultPathSegment(mountPath); err != nil {
+		return err
+	}
+	if err := validateVaultPathSegment(folderPath); err != nil {
+		return err
+	}
+	if err := validateVaultPathSegment(secretName); err != nil {
+		return err
 	}
 	path := fmt.Sprintf("%s/metadata/%s/%s", mountPath, folderPath, secretName)
 	_, err := c.client.Logical().DeleteWithContext(ctx, path)
