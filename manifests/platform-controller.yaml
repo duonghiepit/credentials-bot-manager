@@ -1,0 +1,98 @@
+image:
+  repository: platform-controller
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nodeSelector:
+  node-role.kubernetes.io/worker: worker
+
+serviceAccount:
+  create: true
+  name: platform-controller
+
+rbac:
+  create: true
+  clusterWide: true
+  name: platform-controller
+  rules:
+    # Core RBAC & Secrets management
+    - apiGroups: [""]
+      resources: ["namespaces", "services", "serviceaccounts", "secrets", "configmaps"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    - apiGroups: ["rbac.authorization.k8s.io"]
+      resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    - apiGroups: ["authentication.k8s.io"]
+      resources: ["tokenreviews"]
+      verbs: ["create"]
+    - apiGroups: ["authorization.k8s.io"]
+      resources: ["subjectaccessreviews"]
+      verbs: ["create"]
+    # External Secrets Operator
+    - apiGroups: ["external-secrets.io"]
+      resources: ["secretstores", "clustersecretstores", "externalsecrets"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Secrets Store CSI Driver
+    - apiGroups: ["secrets-store.csi.x-k8s.io"]
+      resources: ["secretproviderclasses"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+configMap:
+  kube-system.yaml: |
+    editors:
+      - dev.user
+    secrets:
+      es:
+        - devopspro-tls
+  infra-storage.yaml: |
+    editors:
+      - dev.user
+    secrets:
+      es:
+        - devopspro-tls
+  external-secrets.yaml: |
+    editors:
+      - dev.user
+    secrets:
+      es:
+        - devopspro-tls
+        - vault-minio-bk
+
+env:
+  VAULT_ADDR: "http://vault.external-secrets.svc:8200"
+  LOG_FORMAT: "json"
+  LOG_LEVEL: "info"
+
+deploys:
+  - fullnameOverride: platform-controller
+    replicasCount: 1
+    command:
+      - /usr/local/bin/platform-controller
+    args:
+      - server
+      - --port=8080
+      - --vault-addr=http://vault.external-secrets.svc:8200
+      - --vault-server=http://vault.external-secrets.svc:8200
+      - --cluster=k3s-ha
+      - --sync-interval=30s
+      - --registry=/etc/platform-controller/registry
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    mountConfigMaps:
+      - name: platform-controller
+        mountPath: /etc/platform-controller/registry/clusters/k3s-ha
+    service:
+      type: ClusterIP
+      port: 8080
+      containerPort: 8080
+      health:
+        httpLive: /healthz
+        httpReady: /readyz
+        livenessInitialDelaySeconds: 3
+        readinessInitialDelaySeconds: 3
+        readinessPeriodSeconds: 5

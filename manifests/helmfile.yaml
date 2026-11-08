@@ -1,0 +1,12 @@
+helmDefaults:
+  recreatePods: false
+  createNamespace: true
+  timeout: 600
+
+releases:
+- name: platform-controller
+  namespace: platform-system
+  values:
+  - ./platform-controller.yaml
+  chart: ../../chart-platform-app
+  version: 1.2.0
