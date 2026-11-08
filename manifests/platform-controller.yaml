@@ -67,3 +67,26 @@ deploys:
         livenessInitialDelaySeconds: 3
         readinessInitialDelaySeconds: 3
         readinessPeriodSeconds: 5
+
+ingress:
+  enabled: true
+  type: nginx
+  ingressClass: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+    nginx.ingress.kubernetes.io/server-tokens: "false"
+  tls:
+    - secretName: devopspro-tls
+      hosts:
+        - platform-controller.devops.pro
+  rules:
+    - host: platform-controller.devops.pro
+      paths:
+        - path: /api/v1/secret
+          pathType: Prefix
+          serviceName: platform-controller
+          servicePort: main
