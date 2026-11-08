@@ -49,6 +49,34 @@ subjects:
     name: platform-controller
     namespace: platform-system
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-controller-registry
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: platform-controller
+data:
+  kube-system.yaml: |
+    editors:
+      - dev.user
+    secrets:
+      es:
+        - devopspro-tls
+  infra-storage.yaml: |
+    editors:
+      - dev.user
+    secrets:
+      es:
+        - devopspro-tls
+  external-secrets.yaml: |
+    editors:
+      - dev.user
+    secrets:
+      es:
+        - devopspro-tls
+        - vault-minio-bk
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,6 +105,9 @@ spec:
             - --port=8080
             - --vault-addr=http://vault.external-secrets.svc:8200
             - --vault-server=http://vault.external-secrets.svc:8200
+            - --cluster=k3s-ha
+            - --sync-interval=30s
+            - --registry=/etc/platform-controller/registry
           env:
             - name: VAULT_ADDR
               value: "http://vault.external-secrets.svc:8200"
@@ -87,6 +118,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          volumeMounts:
+            - name: registry
+              mountPath: /etc/platform-controller/registry/clusters/k3s-ha
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -99,6 +134,10 @@ spec:
               port: 8080
             initialDelaySeconds: 3
             periodSeconds: 5
+      volumes:
+        - name: registry
+          configMap:
+            name: platform-controller-registry
 ---
 apiVersion: v1
 kind: Service
