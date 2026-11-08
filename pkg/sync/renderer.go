@@ -14,12 +14,12 @@ import (
 var (
 	SecretStoreGVR = schema.GroupVersionResource{
 		Group:    "external-secrets.io",
-		Version:  "v1",
+		Version:  "v1beta1",
 		Resource: "secretstores",
 	}
 	ExternalSecretGVR = schema.GroupVersionResource{
 		Group:    "external-secrets.io",
-		Version:  "v1",
+		Version:  "v1beta1",
 		Resource: "externalsecrets",
 	}
 	SecretProviderClassGVR = schema.GroupVersionResource{
@@ -32,7 +32,7 @@ var (
 // RenderSecretStore generates a namespaced SecretStore object.
 func RenderSecretStore(clusterName, namespace, vaultServer string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
-	obj.SetAPIVersion("external-secrets.io/v1")
+	obj.SetAPIVersion("external-secrets.io/v1beta1")
 	obj.SetKind("SecretStore")
 	obj.SetName("vault-backend")
 	obj.SetNamespace(namespace)
@@ -64,7 +64,7 @@ func RenderExternalSecret(namespace, secretName string) *unstructured.Unstructur
 	k8sSecretName := strings.ReplaceAll(secretName, "_", "-")
 
 	obj := &unstructured.Unstructured{}
-	obj.SetAPIVersion("external-secrets.io/v1")
+	obj.SetAPIVersion("external-secrets.io/v1beta1")
 	obj.SetKind("ExternalSecret")
 	obj.SetName(k8sSecretName)
 	obj.SetNamespace(namespace)
