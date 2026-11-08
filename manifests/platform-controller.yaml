@@ -35,37 +35,6 @@ rbac:
       resourceNames: ["platform-controller-auth"]
       verbs: ["get", "update", "patch"]
 
-networkPolicy:
-  enabled: true
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - ports:
-        - protocol: TCP
-          port: 8080
-  egress:
-    # Allow DNS resolution
-    - ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # Allow Vault API in external-secrets namespace
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: external-secrets
-      ports:
-        - protocol: TCP
-          port: 8200
-    # Allow Kubernetes API Server
-    - ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 6443
-
 env:
   VAULT_ADDR: "http://vault.external-secrets.svc:8200"
   LOG_FORMAT: "json"

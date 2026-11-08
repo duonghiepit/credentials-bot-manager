@@ -91,7 +91,19 @@ func (t *authAttemptTracker) reset(ip string) {
 func extractClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if first := strings.TrimSpace(parts[0]); first != "" {
+				return first
+			}
+		}
+		if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+			return xrip
+		}
 	}
 	return host
 }
@@ -266,14 +278,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		clientIP := extractClientIP(r)
-		if s.authTracker != nil && s.authTracker.isBlocked(clientIP) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": "too many failed authentication attempts; try again later",
-			})
-			return
-		}
 
 		s.tokenMu.RLock()
 		expectedKey := s.activeToken
@@ -297,8 +301,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		// Constant-time comparison in memory (~20ns).
+		// Checking token validity before IP lockout prevents attackers from DoS-ing legitimate CI/CD runners
+		// behind a shared Ingress Controller or via X-Forwarded-For spoofing.
 		if reqKey == "" || subtle.ConstantTimeCompare([]byte(reqKey), []byte(expectedKey)) != 1 {
 			if s.authTracker != nil {
+				if s.authTracker.isBlocked(clientIP) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"error": "too many failed authentication attempts; try again later",
+					})
+					return
+				}
 				s.authTracker.recordFailure(clientIP)
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -307,10 +322,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				"error": "unauthorized",
 			})
 			return
-		}
-
-		if s.authTracker != nil {
-			s.authTracker.reset(clientIP)
 		}
 
 		next.ServeHTTP(w, r)
