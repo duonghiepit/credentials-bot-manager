@@ -92,8 +92,8 @@ func runSecretSync(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("   Found %d namespace configuration(s):\n", len(configs))
 	for _, cfg := range configs {
-		fmt.Printf("   ├─ Namespace: %-15s (ES secrets: %d, CSI secrets: %d)\n",
-			cfg.Namespace, len(cfg.Secrets.ES), len(cfg.Secrets.CSI))
+		fmt.Printf("   ├─ Namespace: %-15s (ES: %d, TLS: %d, Registry: %d, CSI: %d)\n",
+			cfg.Namespace, len(cfg.Secrets.ES), len(cfg.Secrets.TLS), len(cfg.Secrets.Registry), len(cfg.Secrets.CSI))
 	}
 	fmt.Println()
 

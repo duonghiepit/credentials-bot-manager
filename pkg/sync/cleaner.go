@@ -65,6 +65,14 @@ func DetectUnmatchedSecrets(
 		declaredVaultSecrets[s] = true
 		declaredK8sExternalSecrets[strings.ReplaceAll(s, "_", "-")] = true
 	}
+	for _, s := range cfg.Secrets.TLS {
+		declaredVaultSecrets[s] = true
+		declaredK8sExternalSecrets[strings.ReplaceAll(s, "_", "-")] = true
+	}
+	for _, s := range cfg.Secrets.Registry {
+		declaredVaultSecrets[s] = true
+		declaredK8sExternalSecrets[strings.ReplaceAll(s, "_", "-")] = true
+	}
 	for _, s := range cfg.Secrets.CSI {
 		declaredVaultSecrets[s] = true
 	}

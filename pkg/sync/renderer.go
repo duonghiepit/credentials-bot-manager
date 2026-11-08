@@ -59,8 +59,8 @@ func RenderSecretStore(clusterName, namespace, vaultServer string) *unstructured
 	return obj
 }
 
-// RenderExternalSecret generates an ExternalSecret object for a specific secret.
-func RenderExternalSecret(namespace, secretName string) *unstructured.Unstructured {
+// RenderExternalSecret generates an ExternalSecret object for a specific secret and optional target K8s Secret type.
+func RenderExternalSecret(namespace, secretName, secretType string) *unstructured.Unstructured {
 	k8sSecretName := strings.ReplaceAll(secretName, "_", "-")
 
 	obj := &unstructured.Unstructured{}
@@ -69,16 +69,23 @@ func RenderExternalSecret(namespace, secretName string) *unstructured.Unstructur
 	obj.SetName(k8sSecretName)
 	obj.SetNamespace(namespace)
 
+	target := map[string]interface{}{
+		"name":           k8sSecretName,
+		"creationPolicy": "Owner",
+	}
+	if secretType != "" {
+		target["template"] = map[string]interface{}{
+			"type": secretType,
+		}
+	}
+
 	spec := map[string]interface{}{
 		"refreshInterval": "1h",
 		"secretStoreRef": map[string]interface{}{
 			"name": "vault-backend",
 			"kind": "SecretStore",
 		},
-		"target": map[string]interface{}{
-			"name":           k8sSecretName,
-			"creationPolicy": "Owner",
-		},
+		"target": target,
 		"dataFrom": []interface{}{
 			map[string]interface{}{
 				"extract": map[string]interface{}{
@@ -98,9 +105,19 @@ func RenderAllForNamespace(cfg *model.NamespaceConfig, vaultServer string) ([]*u
 	// Always render SecretStore
 	manifests = append(manifests, RenderSecretStore(cfg.ClusterName, cfg.Namespace, vaultServer))
 
-	// Render ExternalSecrets for each ES secret
+	// Render ExternalSecrets for standard Opaque ES secrets
 	for _, sec := range cfg.Secrets.ES {
-		manifests = append(manifests, RenderExternalSecret(cfg.Namespace, sec))
+		manifests = append(manifests, RenderExternalSecret(cfg.Namespace, sec, ""))
+	}
+
+	// Render ExternalSecrets for TLS secrets (kubernetes.io/tls)
+	for _, sec := range cfg.Secrets.TLS {
+		manifests = append(manifests, RenderExternalSecret(cfg.Namespace, sec, "kubernetes.io/tls"))
+	}
+
+	// Render ExternalSecrets for Docker Registry secrets (kubernetes.io/dockerconfigjson)
+	for _, sec := range cfg.Secrets.Registry {
+		manifests = append(manifests, RenderExternalSecret(cfg.Namespace, sec, "kubernetes.io/dockerconfigjson"))
 	}
 
 	return manifests, nil

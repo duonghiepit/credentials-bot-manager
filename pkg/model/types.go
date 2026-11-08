@@ -6,14 +6,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SecretsConfig encapsulates secret definitions separated by consumption driver.
+// SecretsConfig encapsulates secret definitions separated by consumption driver and K8s Secret type.
 type SecretsConfig struct {
-	ES  []string `yaml:"es" json:"es"`
-	CSI []string `yaml:"csi" json:"csi"`
+	ES       []string `yaml:"es,omitempty" json:"es,omitempty"`
+	TLS      []string `yaml:"tls,omitempty" json:"tls,omitempty"`
+	Registry []string `yaml:"registry,omitempty" json:"registry,omitempty"`
+	CSI      []string `yaml:"csi,omitempty" json:"csi,omitempty"`
 }
 
 // UnmarshalYAML implements custom unmarshaling to support both:
-// 1. Map format: secrets: { es: [...], csi: [...] }
+// 1. Map format: secrets: { es: [...], tls: [...], registry: [...], csi: [...] }
 // 2. Legacy flat list: secrets: [...] (automatically classified as ES)
 func (s *SecretsConfig) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
@@ -24,17 +26,21 @@ func (s *SecretsConfig) UnmarshalYAML(value *yaml.Node) error {
 			return err
 		}
 		s.ES = list
+		s.TLS = nil
+		s.Registry = nil
 		s.CSI = nil
 		return nil
 
 	case yaml.MappingNode:
-		// Map format with "es" and "csi"
+		// Map format with "es", "tls", "registry", and "csi"
 		type alias SecretsConfig
 		var aux alias
 		if err := value.Decode(&aux); err != nil {
 			return err
 		}
 		s.ES = aux.ES
+		s.TLS = aux.TLS
+		s.Registry = aux.Registry
 		s.CSI = aux.CSI
 		return nil
 
@@ -44,12 +50,14 @@ func (s *SecretsConfig) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling to support both:
-// 1. Map format: {"es": [...], "csi": [...]}
+// 1. Map format: {"es": [...], "tls": [...], "registry": [...], "csi": [...]}
 // 2. Flat list: [...] (automatically classified as ES)
 func (s *SecretsConfig) UnmarshalJSON(data []byte) error {
 	var list []string
 	if err := json.Unmarshal(data, &list); err == nil {
 		s.ES = list
+		s.TLS = nil
+		s.Registry = nil
 		s.CSI = nil
 		return nil
 	}
@@ -60,6 +68,8 @@ func (s *SecretsConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	s.ES = aux.ES
+	s.TLS = aux.TLS
+	s.Registry = aux.Registry
 	s.CSI = aux.CSI
 	return nil
 }
@@ -68,6 +78,8 @@ func (s *SecretsConfig) UnmarshalJSON(data []byte) error {
 func (s *SecretsConfig) AllSecrets() []string {
 	var all []string
 	all = append(all, s.ES...)
+	all = append(all, s.TLS...)
+	all = append(all, s.Registry...)
 	all = append(all, s.CSI...)
 	return all
 }
