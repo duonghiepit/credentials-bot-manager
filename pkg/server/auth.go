@@ -272,7 +272,7 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 // authMiddleware enforces fail-closed constant-time API key validation and per-IP brute-force protection.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 			next.ServeHTTP(w, r)
 			return
 		}

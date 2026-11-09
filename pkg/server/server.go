@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"github.com/duonghiepit/platform-controller/pkg/k8s"
 	"github.com/duonghiepit/platform-controller/pkg/logger"
 	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Config holds the configuration for the HTTP daemon server.
@@ -62,6 +65,7 @@ func NewServer(cfg Config) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleHealthz)
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/cluster/join", s.handleClusterJoin)
 	mux.HandleFunc("/api/v1/secret/sync", s.handleSecretSync)
 	mux.HandleFunc("/api/v1/secret/unmatched", s.handleSecretUnmatched)
@@ -169,8 +173,16 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w}
 
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			b := make([]byte, 8)
+			_, _ = rand.Read(b)
+			reqID = hex.EncodeToString(b)
+		}
+		w.Header().Set("X-Request-ID", reqID)
+
+		sw := &statusWriter{ResponseWriter: w}
 		next.ServeHTTP(sw, r)
 
 		duration := time.Since(start)
@@ -179,15 +191,17 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			status = http.StatusOK
 		}
 
-		if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && status == http.StatusOK {
-			logger.L().Debug("Healthcheck probe",
+		if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics") && status == http.StatusOK {
+			logger.L().Debug("Telemetry probe",
 				slog.String("path", r.URL.Path),
 				slog.Int("status", status),
+				slog.String("request_id", reqID),
 			)
 			return
 		}
 
 		logger.L().Info("HTTP request handled",
+			slog.String("request_id", reqID),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", status),

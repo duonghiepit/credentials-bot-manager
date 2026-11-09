@@ -79,6 +79,15 @@ func (a *Applier) ApplyObject(ctx context.Context, obj *unstructured.Unstructure
 		if errors.IsNotFound(err) {
 			_, createErr := resClient.Create(ctx, obj, metav1.CreateOptions{})
 			if createErr != nil {
+				if errors.IsNotFound(createErr) {
+					// Namespace might not exist yet: auto-create and retry creation
+					if nsErr := a.EnsureNamespace(ctx, namespace); nsErr == nil {
+						_, retryCreateErr := resClient.Create(ctx, obj, metav1.CreateOptions{})
+						if retryCreateErr == nil {
+							return ActionCreated, nil
+						}
+					}
+				}
 				return "", fmt.Errorf("failed to create %s/%s: %w", obj.GetKind(), name, createErr)
 			}
 			return ActionCreated, nil
@@ -139,4 +148,28 @@ func getGVRForObject(obj *unstructured.Unstructured) schema.GroupVersionResource
 	default:
 		return schema.GroupVersionResource{}
 	}
+}
+
+// EnsureNamespace ensures that the target namespace exists in Kubernetes, creating it if missing.
+func (a *Applier) EnsureNamespace(ctx context.Context, namespace string) error {
+	if namespace == "" || namespace == "default" {
+		return nil
+	}
+	nsGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	_, err := a.client.Resource(nsGVR).Get(ctx, namespace, metav1.GetOptions{})
+	if err == nil {
+		return nil
+	}
+	if errors.IsNotFound(err) {
+		nsObj := &unstructured.Unstructured{}
+		nsObj.SetAPIVersion("v1")
+		nsObj.SetKind("Namespace")
+		nsObj.SetName(namespace)
+		_, createErr := a.client.Resource(nsGVR).Create(ctx, nsObj, metav1.CreateOptions{})
+		if createErr != nil && !errors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("failed to auto-create namespace %s: %w", namespace, createErr)
+		}
+		return nil
+	}
+	return err
 }

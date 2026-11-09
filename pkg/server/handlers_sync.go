@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/duonghiepit/platform-controller/pkg/logger"
+	"github.com/duonghiepit/platform-controller/pkg/metrics"
 	"github.com/duonghiepit/platform-controller/pkg/model"
 	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -102,12 +103,19 @@ func (s *Server) handleSecretSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	syncStart := time.Now()
 	stats, err := s.applyConfigs(ctx, configs, vaultServer)
 	if err != nil {
+		metrics.SyncRequestsTotal.WithLabelValues(req.ClusterName, req.Namespace, "error").Inc()
 		log.Error("Secret sync failed", slog.String("error", err.Error()))
 		http.Error(w, "secret synchronization failed", http.StatusInternalServerError)
 		return
 	}
+
+	durationSec := time.Since(syncStart).Seconds()
+	metrics.SyncRequestsTotal.WithLabelValues(req.ClusterName, req.Namespace, "success").Inc()
+	metrics.SyncDurationSeconds.WithLabelValues(req.ClusterName).Observe(durationSec)
+	metrics.SyncedObjectsGauge.WithLabelValues(req.ClusterName, "total").Set(float64(stats.Total))
 
 	log.Info("Secret sync completed successfully",
 		slog.String("cluster", req.ClusterName),
