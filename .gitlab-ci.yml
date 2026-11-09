@@ -1,0 +1,39 @@
+stages:
+  - test
+  - fetch-runner-secret
+
+variables:
+  VAULT_ADDR: "https://infra-vault.devops.pro"
+
+unit-test:
+  stage: test
+  image: golang:1.24-alpine
+  script:
+    - echo "==> Running Go unit tests..."
+    - go test -v ./...
+
+fetch-build-secret:
+  stage: fetch-runner-secret
+  image: infra-registry.devops.pro/gitlab-runner/platform-terraform:1.10.5
+  id_tokens:
+    VAULT_JWT:
+      aud: https://infra-vault.devops.pro
+  script:
+    - echo "==> Authenticating to Vault via GitLab CI OIDC JWT token..."
+    - |
+      VAULT_LOGIN_RESP=$(curl -k -s --fail --request POST \
+        --data "{\"jwt\": \"${VAULT_JWT}\", \"role\": \"r-gitlab-gitlab-runner-platform-controller\"}" \
+        "${VAULT_ADDR}/v1/auth/jwt_gitlab/login")
+      VAULT_TOKEN=$(echo "$VAULT_LOGIN_RESP" | jq -r .auth.client_token)
+      if [ -z "$VAULT_TOKEN" ] || [ "$VAULT_TOKEN" = "null" ]; then
+        echo "Error: Vault login failed: $VAULT_LOGIN_RESP"
+        exit 1
+      fi
+      echo "==> Vault authentication SUCCESS! Dynamic short-lived token received."
+    - |
+      echo "==> Fetching build secret: kv2-gitlab-runner/platform-controller/harbor-registry-credentials..."
+      SECRET_DATA=$(curl -k -s --fail -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        "${VAULT_ADDR}/v1/kv2-gitlab-runner/data/platform-controller/harbor-registry-credentials")
+      HARBOR_USER=$(echo "$SECRET_DATA" | jq -r .data.data.username)
+      echo "==> Successfully retrieved Harbor robot username: $HARBOR_USER"
+      echo "==> Zero-static secret CI/CD build verified successfully!"
