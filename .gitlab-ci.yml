@@ -2,6 +2,10 @@ stages:
   - test
   - fetch-runner-secret
 
+default:
+  tags:
+    - infra-general-p
+
 variables:
   VAULT_ADDR: "https://infra-vault.devops.pro"
 
