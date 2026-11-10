@@ -11,10 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/duonghiepit/platform-controller/pkg/deployer"
 	"github.com/duonghiepit/platform-controller/pkg/k8s"
 	"github.com/duonghiepit/platform-controller/pkg/logger"
 	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"k8s.io/client-go/kubernetes"
 )
 
 // Config holds the configuration for the HTTP daemon server.
@@ -27,16 +29,23 @@ type Config struct {
 	ClusterName   string
 	VaultServer   string
 	AuthNamespace string
+	GitLabURL     string
+	GitLabToken   string
+	ClustersDir   string
+	DefaultBranch string
+	ArgoCDURL     string
+	ArgoCDToken   string
 }
 
 // Server implements the HTTP API daemon and background reconciler.
 type Server struct {
-	cfg         Config
-	k8sClient   *k8s.Client
-	applier     *syncpkg.Applier
-	server      *http.Server
-	wg          sync.WaitGroup
-	authTracker *authAttemptTracker
+	cfg           Config
+	k8sClient     *k8s.Client
+	applier       *syncpkg.Applier
+	deployManager *deployer.Manager
+	server        *http.Server
+	wg            sync.WaitGroup
+	authTracker   *authAttemptTracker
 
 	tokenMu     sync.RWMutex
 	activeToken string
@@ -46,16 +55,36 @@ type Server struct {
 func NewServer(cfg Config) (*Server, error) {
 	k8sClient, err := k8s.NewClient("", "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
+		logger.L().Warn("Could not initialize Kubernetes client (running in standalone/offline mode)", slog.String("error", err.Error()))
+		k8sClient = nil
 	}
 
-	applier := syncpkg.NewApplier(k8sClient.DynamicClient)
+	var applier *syncpkg.Applier
+	var k8sCore kubernetes.Interface
+	if k8sClient != nil {
+		if k8sClient.DynamicClient != nil {
+			applier = syncpkg.NewApplier(k8sClient.DynamicClient)
+		}
+		if k8sClient.Clientset != nil {
+			k8sCore = k8sClient.Clientset
+		}
+	}
+
+	deployMgr := deployer.NewManager(deployer.Config{
+		GitLabURL:     cfg.GitLabURL,
+		GitLabToken:   cfg.GitLabToken,
+		ClustersDir:   cfg.ClustersDir,
+		DefaultBranch: cfg.DefaultBranch,
+		ArgoCDURL:     cfg.ArgoCDURL,
+		ArgoCDToken:   cfg.ArgoCDToken,
+	}, k8sCore)
 
 	s := &Server{
-		cfg:         cfg,
-		k8sClient:   k8sClient,
-		applier:     applier,
-		authTracker: newAuthAttemptTracker(),
+		cfg:           cfg,
+		k8sClient:     k8sClient,
+		applier:       applier,
+		deployManager: deployMgr,
+		authTracker:   newAuthAttemptTracker(),
 	}
 
 	if err := s.ensureAuthToken(context.Background()); err != nil {
@@ -70,6 +99,10 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/v1/secret/sync", s.handleSecretSync)
 	mux.HandleFunc("/api/v1/secret/unmatched", s.handleSecretUnmatched)
 	mux.HandleFunc("/api/v1/auth/rotate-token", s.handleRotateToken)
+	mux.HandleFunc("/api/v1/deploy", s.handleDeployContainerImages)
+	mux.HandleFunc("/api/v1/deploy/status", s.handleReloadDeployStatus)
+	mux.HandleFunc("/configsManager/deployContainerImages", s.handleDeployContainerImages)
+	mux.HandleFunc("/configsManager/reloadDeployStatus", s.handleReloadDeployStatus)
 	mux.HandleFunc("/", s.handleNotFound)
 
 	authHandler := s.authMiddleware(mux)

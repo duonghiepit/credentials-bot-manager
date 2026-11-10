@@ -136,6 +136,9 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 		return nil
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
 	secret, err := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, defaultAuthSecretName, metav1.GetOptions{})
 	if err == nil && secret != nil && len(secret.Data[authSecretKey]) > 0 {
 		token := strings.TrimSpace(string(secret.Data[authSecretKey]))
@@ -178,7 +181,14 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 			s.tokenMu.Unlock()
 			return nil
 		}
-		return fmt.Errorf("failed to create auth secret %s/%s: %w", ns, defaultAuthSecretName, err)
+		log.Warn("Failed to persist auth secret to Kubernetes; running with standalone in-memory token",
+			slog.String("namespace", ns),
+			slog.String("error", err.Error()),
+		)
+		s.tokenMu.Lock()
+		s.activeToken = newToken
+		s.tokenMu.Unlock()
+		return nil
 	}
 
 	s.tokenMu.Lock()
