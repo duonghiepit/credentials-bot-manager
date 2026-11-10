@@ -85,12 +85,12 @@ spec:
 	t.Run("Deploy rejected on path traversal", func(t *testing.T) {
 		reqBody := `{"targetDeploymentCluster":"dev-business-cluster","imageUrls":"infra-registry.devops.pro/business/demo-service:v1.1.0","appYamlPath":"../etc/passwd"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/deploy", bytes.NewBufferString(reqBody))
-		req.Header.Set("Api-Key", "test-secret-token")
+		req.Header.Set("Gitlab-Job-Token", "test-secret-token")
 		w := httptest.NewRecorder()
 
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 401 BadRequest, got %d", w.Code)
+			t.Fatalf("expected 400 BadRequest, got %d", w.Code)
 		}
 	})
 

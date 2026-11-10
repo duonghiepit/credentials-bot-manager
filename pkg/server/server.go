@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,7 @@ type Server struct {
 	k8sClient     *k8s.Client
 	applier       *syncpkg.Applier
 	deployManager *deployer.Manager
+	httpClient    *http.Client
 	server        *http.Server
 	wg            sync.WaitGroup
 	authTracker   *authAttemptTracker
@@ -79,11 +81,17 @@ func NewServer(cfg Config) (*Server, error) {
 		ArgoCDToken:   cfg.ArgoCDToken,
 	}, k8sCore)
 
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	httpClient := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+
 	s := &Server{
 		cfg:           cfg,
 		k8sClient:     k8sClient,
 		applier:       applier,
 		deployManager: deployMgr,
+		httpClient:    httpClient,
 		authTracker:   newAuthAttemptTracker(),
 	}
 

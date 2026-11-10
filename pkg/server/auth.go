@@ -279,7 +279,29 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authMiddleware enforces fail-closed constant-time API key validation and per-IP brute-force protection.
+// validateGitlabJobToken validates a GitLab CI job token against the GitLab API.
+func (s *Server) validateGitlabJobToken(ctx context.Context, jobToken string) bool {
+	if jobToken == "" || s.cfg.GitLabURL == "" || s.httpClient == nil {
+		return false
+	}
+	jobURL := fmt.Sprintf("%s/api/v4/job", strings.TrimSuffix(s.cfg.GitLabURL, "/"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("JOB-TOKEN", jobToken)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		logger.L().Warn("Failed to contact GitLab to validate job token", slog.String("error", err.Error()))
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// authMiddleware enforces fail-closed constant-time API key validation,
+// native GitLab CI job token verification, and per-IP brute-force protection.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
@@ -310,11 +332,20 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				reqKey = strings.TrimPrefix(authHeader, "Bearer ")
 			}
 		}
+		gitlabJobToken := r.Header.Get("Gitlab-Job-Token")
+		if reqKey == "" {
+			reqKey = gitlabJobToken
+		}
 
-		// Constant-time comparison in memory (~20ns).
-		// Checking token validity before IP lockout prevents attackers from DoS-ing legitimate CI/CD runners
-		// behind a shared Ingress Controller or via X-Forwarded-For spoofing.
-		if reqKey == "" || subtle.ConstantTimeCompare([]byte(reqKey), []byte(expectedKey)) != 1 {
+		isValid := false
+		if reqKey != "" && subtle.ConstantTimeCompare([]byte(reqKey), []byte(expectedKey)) == 1 {
+			isValid = true
+		} else if gitlabJobToken != "" && s.validateGitlabJobToken(r.Context(), gitlabJobToken) {
+			isValid = true
+		}
+
+		// Constant-time comparison or GitLab Job Token verification failed
+		if !isValid {
 			if s.authTracker != nil {
 				if s.authTracker.isBlocked(clientIP) {
 					w.Header().Set("Content-Type", "application/json")
