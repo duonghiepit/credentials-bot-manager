@@ -234,6 +234,23 @@ func (m *Manager) patchViaGitLabAPI(projectPath, filePath, imageRepo, newTag, co
 	if err != nil {
 		return fmt.Errorf("failed to fetch current file from GitLab: %w", err)
 	}
+
+	// If not found and projectPath has no group prefix, try prefixing with 'clusters/'
+	if resp.StatusCode == http.StatusNotFound && !strings.Contains(projectPath, "/") {
+		resp.Body.Close()
+		encodedProject = url.PathEscape("clusters/" + projectPath)
+		getURL = fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s/raw?ref=%s",
+			m.cfg.GitLabURL, encodedProject, encodedFile, m.cfg.DefaultBranch)
+		req, err = http.NewRequest(http.MethodGet, getURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
+		resp, err = m.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to fetch current file from GitLab: %w", err)
+		}
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
