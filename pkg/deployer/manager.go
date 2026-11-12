@@ -142,12 +142,40 @@ func (m *Manager) StartDeployment(ctx context.Context, req DeployRequest) (*Depl
 
 // GetEventStatus retrieves current state of a deployment event.
 func (m *Manager) GetEventStatus(eventID string) (*DeployEvent, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	ev, exists := m.events[eventID]
 	if !exists {
 		return nil, false
 	}
+
+	// If pipeline URL is not yet resolved to an exact pipeline, try resolving via GitLab API
+	if ev.PipelineID == 0 && ev.CommitSHA != "" && m.cfg.GitLabToken != "" && m.cfg.GitLabURL != "" {
+		targetProj := ev.TargetCluster
+		if !strings.Contains(targetProj, "/") {
+			targetProj = "clusters/" + targetProj
+		}
+		encodedProject := url.PathEscape(targetProj)
+		pipeReqURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines?sha=%s", m.cfg.GitLabURL, encodedProject, ev.CommitSHA)
+		pipeReq, err := http.NewRequest(http.MethodGet, pipeReqURL, nil)
+		if err == nil {
+			pipeReq.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
+			if pipeResp, err := m.httpClient.Do(pipeReq); err == nil {
+				if pipeResp.StatusCode == http.StatusOK {
+					var pipelines []struct {
+						ID     int    `json:"id"`
+						WebURL string `json:"web_url"`
+					}
+					if json.NewDecoder(pipeResp.Body).Decode(&pipelines) == nil && len(pipelines) > 0 {
+						ev.PipelineID = pipelines[0].ID
+						ev.PipelineURL = pipelines[0].WebURL
+					}
+				}
+				pipeResp.Body.Close()
+			}
+		}
+	}
+
 	// Return a copy to avoid data races
 	cp := *ev
 	return &cp, true
