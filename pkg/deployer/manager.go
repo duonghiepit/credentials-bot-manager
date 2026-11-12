@@ -18,6 +18,7 @@ import (
 
 	"github.com/duonghiepit/platform-controller/pkg/logger"
 	"github.com/google/uuid"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -158,37 +159,62 @@ func (m *Manager) executeDeployment(eventID string, req DeployRequest, imageRepo
 	m.updateEventStatus(eventID, StatusRunning, "Patching GitOps configuration repository...")
 
 	// 1. Execute GitOps Patch
-	err := m.patchGitOpsRepo(req.TargetCluster, req.AppYAMLPath, imageRepo, imageTag, req.GitCommit)
+	patchResult, err := m.patchGitOpsRepo(req.TargetCluster, req.AppYAMLPath, imageRepo, imageTag, req.GitCommit)
 	if err != nil {
 		log.Error("GitOps patch failed", slog.String("error", err.Error()))
 		m.updateEventStatus(eventID, StatusFailed, fmt.Sprintf("GitOps patch failed: %v", err))
 		return
 	}
 
+	if patchResult != nil {
+		m.mu.Lock()
+		if ev, exists := m.events[eventID]; exists {
+			ev.CommitSHA = patchResult.CommitSHA
+			ev.CommitURL = patchResult.CommitURL
+			ev.PipelineID = patchResult.PipelineID
+			ev.PipelineURL = patchResult.PipelineURL
+		}
+		m.mu.Unlock()
+	}
+
 	log.Info("GitOps repository updated successfully",
 		slog.String("cluster", req.TargetCluster),
 		slog.String("file", req.AppYAMLPath),
-		slog.String("tag", imageTag))
+		slog.String("tag", imageTag),
+		slog.String("pipelineUrl", func() string {
+			if patchResult != nil {
+				return patchResult.PipelineURL
+			}
+			return ""
+		}()))
 
 	// 2. Trigger ArgoCD sync if configured
 	if m.cfg.ArgoCDURL != "" && m.cfg.ArgoCDToken != "" {
 		m.updateEventStatus(eventID, StatusRunning, "Triggering ArgoCD application sync...")
-		if syncErr := m.triggerArgoSync(req.AppName); syncErr != nil {
+		if syncErr := m.triggerArgoSync(req.TargetCluster, req.AppName); syncErr != nil {
 			log.Warn("ArgoCD trigger sync returned error", slog.String("error", syncErr.Error()))
 		}
 	}
 
-	// 3. Monitor K8s Rollout
-	if m.k8sClient != nil && req.Namespace != "" && req.AppName != "" {
+	// 3. Monitor K8s Rollout (only if deploying to local platform cluster)
+	isLocalCluster := req.TargetCluster == "" || strings.Contains(req.TargetCluster, "platform") || strings.Contains(req.TargetCluster, "local")
+	if isLocalCluster && m.k8sClient != nil && req.Namespace != "" && req.AppName != "" {
 		m.updateEventStatus(eventID, StatusRunning, fmt.Sprintf("Monitoring Kubernetes rollout for %s in %s...", req.AppName, req.Namespace))
 		if rolloutErr := m.waitForRollout(req.Namespace, req.AppName, 90*time.Second); rolloutErr != nil {
 			log.Error("Rollout check failed", slog.String("error", rolloutErr.Error()))
 			m.updateEventStatus(eventID, StatusFailed, fmt.Sprintf("Rollout failed: %v", rolloutErr))
 			return
 		}
+	} else if !isLocalCluster {
+		log.Info("Target cluster is remote; GitOps commit applied for ArgoCD deployment",
+			slog.String("cluster", req.TargetCluster))
 	}
 
-	m.updateEventStatus(eventID, StatusSuccess, fmt.Sprintf("Successfully deployed %s:%s to %s", imageRepo, imageTag, req.TargetCluster))
+	successMsg := fmt.Sprintf("Successfully deployed %s:%s to %s", imageRepo, imageTag, req.TargetCluster)
+	if patchResult != nil && patchResult.PipelineURL != "" {
+		successMsg = fmt.Sprintf("Successfully deployed %s:%s to %s | Pipeline: %s", imageRepo, imageTag, req.TargetCluster, patchResult.PipelineURL)
+	}
+	m.updateEventStatus(eventID, StatusSuccess, successMsg)
 }
 
 func (m *Manager) updateEventStatus(eventID string, status DeployStatus, msg string) {
@@ -202,7 +228,7 @@ func (m *Manager) updateEventStatus(eventID string, status DeployStatus, msg str
 }
 
 // patchGitOpsRepo performs atomic update on target GitOps repo either via GitLab API or local filesystem.
-func (m *Manager) patchGitOpsRepo(targetCluster, appYamlPath, imageRepo, newTag, commitSHA string) error {
+func (m *Manager) patchGitOpsRepo(targetCluster, appYamlPath, imageRepo, newTag, commitSHA string) (*PatchResult, error) {
 	// If GitLab token is present, use GitLab API for atomic single-commit updates without local disk dependency
 	if m.cfg.GitLabToken != "" && m.cfg.GitLabURL != "" {
 		return m.patchViaGitLabAPI(targetCluster, appYamlPath, imageRepo, newTag, commitSHA)
@@ -213,10 +239,10 @@ func (m *Manager) patchGitOpsRepo(targetCluster, appYamlPath, imageRepo, newTag,
 		return m.patchViaFilesystem(targetCluster, appYamlPath, imageRepo, newTag)
 	}
 
-	return fmt.Errorf("no GitLab token or local clusters directory configured for GitOps writes")
+	return nil, fmt.Errorf("no GitLab token or local clusters directory configured for GitOps writes")
 }
 
-func (m *Manager) patchViaGitLabAPI(projectPath, filePath, imageRepo, newTag, commitSHA string) error {
+func (m *Manager) patchViaGitLabAPI(projectPath, filePath, imageRepo, newTag, commitSHA string) (*PatchResult, error) {
 	encodedProject := url.PathEscape(projectPath)
 	encodedFile := url.PathEscape(filePath)
 
@@ -226,13 +252,13 @@ func (m *Manager) patchViaGitLabAPI(projectPath, filePath, imageRepo, newTag, co
 
 	req, err := http.NewRequest(http.MethodGet, getURL, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to fetch current file from GitLab: %w", err)
+		return nil, fmt.Errorf("failed to fetch current file from GitLab: %w", err)
 	}
 
 	// If not found and projectPath has no group prefix, try prefixing with 'clusters/'
@@ -243,37 +269,37 @@ func (m *Manager) patchViaGitLabAPI(projectPath, filePath, imageRepo, newTag, co
 			m.cfg.GitLabURL, encodedProject, encodedFile, m.cfg.DefaultBranch)
 		req, err = http.NewRequest(http.MethodGet, getURL, nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
 		resp, err = m.httpClient.Do(req)
 		if err != nil {
-			return fmt.Errorf("failed to fetch current file from GitLab: %w", err)
+			return nil, fmt.Errorf("failed to fetch current file from GitLab: %w", err)
 		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GitLab get file error (%d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("GitLab get file error (%d): %s", resp.StatusCode, string(body))
 	}
 
 	oldContent, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read file content: %w", err)
+		return nil, fmt.Errorf("failed to read file content: %w", err)
 	}
 
 	// 2. Patch AST
 	patchedContent, err := PatchImageTag(oldContent, imageRepo, newTag)
 	if err != nil {
-		return fmt.Errorf("failed to patch yaml content: %w", err)
+		return nil, fmt.Errorf("failed to patch yaml content: %w", err)
 	}
 
 	// 3. Commit change via GitLab Commits API
 	commitURL := fmt.Sprintf("%s/api/v4/projects/%s/repository/commits", m.cfg.GitLabURL, encodedProject)
 	commitPayload := map[string]interface{}{
 		"branch":         m.cfg.DefaultBranch,
-		"commit_message": fmt.Sprintf("chore(deploy): update %s image to %s [commit %s] [skip ci]", filepath.Base(filePath), newTag, commitSHA),
+		"commit_message": fmt.Sprintf("chore(deploy): update %s image to %s [commit %s]", filepath.Base(filePath), newTag, commitSHA),
 		"actions": []map[string]string{
 			{
 				"action":    "update",
@@ -285,51 +311,135 @@ func (m *Manager) patchViaGitLabAPI(projectPath, filePath, imageRepo, newTag, co
 
 	payloadBytes, err := json.Marshal(commitPayload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	postReq, err := http.NewRequest(http.MethodPost, commitURL, bytes.NewReader(payloadBytes))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	postReq.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
 	postReq.Header.Set("Content-Type", "application/json")
 
 	postResp, err := m.httpClient.Do(postReq)
 	if err != nil {
-		return fmt.Errorf("failed to post commit to GitLab: %w", err)
+		return nil, fmt.Errorf("failed to post commit to GitLab: %w", err)
 	}
 	defer postResp.Body.Close()
 
 	if postResp.StatusCode != http.StatusOK && postResp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(postResp.Body)
-		return fmt.Errorf("GitLab commit error (%d): %s", postResp.StatusCode, string(body))
+		return nil, fmt.Errorf("GitLab commit error (%d): %s", postResp.StatusCode, string(body))
 	}
 
-	return nil
+	var commitResp struct {
+		ID      string `json:"id"`
+		ShortID string `json:"short_id"`
+		WebURL  string `json:"web_url"`
+	}
+	_ = json.NewDecoder(postResp.Body).Decode(&commitResp)
+
+	cleanProject := strings.TrimPrefix(projectPath, "clusters/")
+	res := &PatchResult{
+		CommitSHA:   commitResp.ID,
+		CommitURL:   commitResp.WebURL,
+		PipelineURL: fmt.Sprintf("%s/clusters/%s/-/pipelines", strings.TrimSuffix(m.cfg.GitLabURL, "/"), cleanProject),
+	}
+
+	// Fetch triggered pipeline for this commit (GitLab creates pipeline within ~500ms)
+	for i := 0; i < 4; i++ {
+		time.Sleep(500 * time.Millisecond)
+		pipeReqURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines?sha=%s", m.cfg.GitLabURL, encodedProject, commitResp.ID)
+		pipeReq, err := http.NewRequest(http.MethodGet, pipeReqURL, nil)
+		if err == nil {
+			pipeReq.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
+			if pipeResp, err := m.httpClient.Do(pipeReq); err == nil {
+				if pipeResp.StatusCode == http.StatusOK {
+					var pipelines []struct {
+						ID     int    `json:"id"`
+						WebURL string `json:"web_url"`
+					}
+					if json.NewDecoder(pipeResp.Body).Decode(&pipelines) == nil && len(pipelines) > 0 {
+						res.PipelineID = pipelines[0].ID
+						res.PipelineURL = pipelines[0].WebURL
+						pipeResp.Body.Close()
+						break
+					}
+				}
+				pipeResp.Body.Close()
+			}
+		}
+	}
+
+	return res, nil
 }
 
-func (m *Manager) patchViaFilesystem(targetCluster, appYamlPath, imageRepo, newTag string) error {
+func (m *Manager) patchViaFilesystem(targetCluster, appYamlPath, imageRepo, newTag string) (*PatchResult, error) {
 	fullPath := filepath.Join(m.cfg.ClustersDir, targetCluster, appYamlPath)
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
-		return fmt.Errorf("failed to read local cluster file %s: %w", fullPath, err)
+		return nil, fmt.Errorf("failed to read local cluster file %s: %w", fullPath, err)
 	}
 
 	patched, err := PatchImageTag(content, imageRepo, newTag)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return os.WriteFile(fullPath, patched, 0644)
+	if err := os.WriteFile(fullPath, patched, 0644); err != nil {
+		return nil, err
+	}
+	return &PatchResult{}, nil
 }
 
-func (m *Manager) triggerArgoSync(appName string) error {
-	if appName == "" {
+func (m *Manager) triggerArgoSync(targetCluster, appName string) error {
+	if appName == "" || m.cfg.ArgoCDURL == "" {
 		return nil
 	}
-	syncURL := fmt.Sprintf("%s/api/v1/applications/%s/sync", strings.TrimSuffix(m.cfg.ArgoCDURL, "/"), appName)
-	req, err := http.NewRequest(http.MethodPost, syncURL, bytes.NewBufferString("{}"))
+
+	baseURL := strings.TrimSuffix(m.cfg.ArgoCDURL, "/")
+
+	// 1. Fetch applications to find exact matched ArgoCD application name
+	listURL := fmt.Sprintf("%s/api/v1/applications", baseURL)
+	listReq, err := http.NewRequest(http.MethodGet, listURL, nil)
+	if err == nil {
+		listReq.Header.Set("Authorization", "Bearer "+m.cfg.ArgoCDToken)
+		if listResp, err := m.httpClient.Do(listReq); err == nil {
+			defer listResp.Body.Close()
+			var appList struct {
+				Items []struct {
+					Metadata struct {
+						Name string `json:"name"`
+					} `json:"metadata"`
+				} `json:"items"`
+			}
+			if err := json.NewDecoder(listResp.Body).Decode(&appList); err == nil {
+				for _, it := range appList.Items {
+					name := it.Metadata.Name
+					// Match name: exact match, or ends with -appName, or contains appName
+					if name == appName || strings.HasSuffix(name, "-"+appName) || strings.Contains(name, appName) {
+						if strings.HasPrefix(name, "pa-") {
+							// pa-* is ApplicationSet wrapper, prefer actual workload app
+							continue
+						}
+						slog.Info("Triggering ArgoCD sync for discovered application",
+							slog.String("appName", appName),
+							slog.String("argoApp", name))
+						m.syncSingleArgoApp(baseURL, name)
+					}
+				}
+			}
+		}
+	}
+
+	// Also attempt direct sync for raw appName
+	return m.syncSingleArgoApp(baseURL, appName)
+}
+
+func (m *Manager) syncSingleArgoApp(baseURL, appName string) error {
+	syncURL := fmt.Sprintf("%s/api/v1/applications/%s/sync", baseURL, appName)
+	body := `{"prune": true, "strategy": {"hook": {}}}`
+	req, err := http.NewRequest(http.MethodPost, syncURL, bytes.NewBufferString(body))
 	if err != nil {
 		return err
 	}
@@ -358,6 +468,9 @@ func (m *Manager) waitForRollout(namespace, appName string, timeout time.Duratio
 		case <-ticker.C:
 			deploy, err := m.k8sClient.AppsV1().Deployments(namespace).Get(ctx, appName, metav1.GetOptions{})
 			if err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
 				return err
 			}
 			var desiredReplicas int32 = 1

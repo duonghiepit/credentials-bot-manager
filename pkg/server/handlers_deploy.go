@@ -99,6 +99,11 @@ func (s *Server) handleReloadDeployStatus(w http.ResponseWriter, r *http.Request
 			"imageUrl":      event.ImageURL,
 			"imageTag":      event.ImageTag,
 			"gitCommit":     event.GitCommit,
+			"commitSha":     event.CommitSHA,
+			"commitUrl":     event.CommitURL,
+			"pipelineId":    event.PipelineID,
+			"pipelineUrl":   event.PipelineURL,
+			"targetCluster": event.TargetCluster,
 			"updatedAt":     event.UpdatedAt,
 		},
 	})

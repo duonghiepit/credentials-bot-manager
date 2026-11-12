@@ -38,6 +38,14 @@ type DeployStatusRequest struct {
 	EventID string `json:"eventId"`
 }
 
+// PatchResult stores the result of a GitOps commit and triggered pipeline
+type PatchResult struct {
+	CommitSHA   string `json:"commitSha,omitempty"`
+	CommitURL   string `json:"commitUrl,omitempty"`
+	PipelineID  int    `json:"pipelineId,omitempty"`
+	PipelineURL string `json:"pipelineUrl,omitempty"`
+}
+
 // DeployEvent stores the in-memory state of an ongoing or finished deployment
 type DeployEvent struct {
 	EventID       string       `json:"eventId"`
@@ -47,6 +55,10 @@ type DeployEvent struct {
 	ImageURL      string       `json:"imageUrl"`
 	ImageTag      string       `json:"imageTag"`
 	GitCommit     string       `json:"gitCommit"`
+	CommitSHA     string       `json:"commitSha,omitempty"`
+	CommitURL     string       `json:"commitUrl,omitempty"`
+	PipelineID    int          `json:"pipelineId,omitempty"`
+	PipelineURL   string       `json:"pipelineUrl,omitempty"`
 	CreatedAt     time.Time    `json:"createdAt"`
 	UpdatedAt     time.Time    `json:"updatedAt"`
 	Error         string       `json:"error,omitempty"`
