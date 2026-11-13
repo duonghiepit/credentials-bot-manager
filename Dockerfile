@@ -1,5 +1,5 @@
 # ==============================================================================
-# Build Stage
+# Build Stage (100% Offline / Zero Network via vendored dependencies)
 # ==============================================================================
 FROM golang:1.24-alpine AS builder
 
@@ -8,14 +8,14 @@ WORKDIR /src
 RUN echo "nonroot:x:65532:65532:nonroot:/nonexistent:/sbin/nologin" > /etc/passwd.nonroot && \
     echo "nonroot:x:65532:" > /etc/group.nonroot
 
-COPY go.mod go.sum* ./
-RUN go mod download || true
-
 COPY . .
 
 ARG TARGETOS=linux
 ARG TARGETARCH
+ENV GOPROXY=off
+
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -mod=vendor \
     -trimpath \
     -ldflags="-s -w -X main.version=1.0.0" \
     -o /bin/credentials-bot-manager main.go
