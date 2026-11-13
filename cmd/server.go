@@ -41,7 +41,7 @@ func init() {
 	serverCmd.Flags().IntVarP(&serverPort, "port", "p", 8080, "HTTP server listening port")
 	serverCmd.Flags().StringVarP(&serverRegistry, "registry", "r", "/etc/credentials-bot-manager/registry", "Path to GitOps registry folder")
 	serverCmd.Flags().StringVarP(&serverCluster, "cluster", "c", "", "Cluster name for auto-reconciliation loop")
-	serverCmd.Flags().DurationVar(&serverSyncInterval, "sync-interval", 0, "Periodic secret sync interval (e.g. 5m). 0 disables auto-sync")
+	serverCmd.Flags().DurationVar(&serverSyncInterval, "sync-interval", 15*time.Second, "Periodic secret sync interval (e.g. 15s). 0 disables auto-sync")
 	serverCmd.Flags().StringVar(&serverVaultServer, "vault-server", "http://vault.external-secrets.svc:8200", "Vault server endpoint reachable within K8s")
 	serverCmd.Flags().StringVar(&serverGitLabURL, "gitlab-url", "https://infra-gitlab.devops.pro", "GitLab API Base URL")
 	serverCmd.Flags().StringVar(&serverAuthNamespace, "auth-namespace", "platform-system", "Kubernetes namespace where auth token secret is persisted (ArgoCD style)")

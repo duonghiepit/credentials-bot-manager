@@ -5,8 +5,7 @@ FROM golang:1.24-alpine AS builder
 
 WORKDIR /src
 
-RUN apk add --no-cache git ca-certificates && \
-    echo "nonroot:x:65532:65532:nonroot:/nonexistent:/sbin/nologin" > /etc/passwd.nonroot && \
+RUN echo "nonroot:x:65532:65532:nonroot:/nonexistent:/sbin/nologin" > /etc/passwd.nonroot && \
     echo "nonroot:x:65532:" > /etc/group.nonroot
 
 COPY go.mod go.sum* ./
@@ -14,7 +13,9 @@ RUN go mod download || true
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags="-s -w -X main.version=1.0.0" \
     -o /bin/credentials-bot-manager main.go
