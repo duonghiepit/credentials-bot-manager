@@ -1,6 +1,6 @@
 package main
 
-import "github.com/duonghiepit/platform-controller/cmd"
+import "github.com/duonghiepit/credentials-bot-manager/cmd"
 
 func main() {
 	cmd.Execute()

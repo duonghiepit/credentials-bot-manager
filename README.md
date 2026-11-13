@@ -1,12 +1,12 @@
-# Platform Controller
+# Credentials Bot Manager
 
-**Cloud-Native Platform Orchestrator** for Kubernetes Multi-Cluster HashiCorp Vault Integration, External Secrets Operator (ESO), and Secrets Store CSI Driver.
+**Cloud-Native Platform & Secrets Orchestrator** for Kubernetes Multi-Cluster HashiCorp Vault Integration, External Secrets Operator (ESO), and Secrets Store CSI Driver.
 
 ---
 
 ## 1. Overview
 
-`platform-controller` acts as the operational orchestrator bridging **Kubernetes clusters**, **GitOps registries**, and **HashiCorp Vault**:
+`credentials-bot-manager` acts as the operational orchestrator bridging **Kubernetes clusters**, **GitOps registries**, and **HashiCorp Vault**:
 
 1. **Zero-Secret Cluster Join Handshake (`cluster join`):**
    - Automatically bootstraps the TokenReviewer ServiceAccount and RBAC on satellite Kubernetes clusters.
@@ -30,7 +30,7 @@
 Join a new satellite cluster to central Vault:
 
 ```bash
-platform-controller cluster join \
+credentials-bot-manager cluster join \
   --cluster app-cluster \
   --kubeconfig ~/.kube/config \
   --context k3d-app-cluster \
@@ -40,7 +40,7 @@ platform-controller cluster join \
 
 Preview without making changes:
 ```bash
-platform-controller cluster join --cluster app-cluster --dry-run
+credentials-bot-manager cluster join --cluster app-cluster --dry-run
 ```
 
 ---
@@ -51,14 +51,14 @@ Synchronize secrets defined in GitOps registry into Kubernetes:
 
 ```bash
 # Preview generated SecretStore, ExternalSecret, and SecretProviderClass manifests
-platform-controller secret sync \
-  --registry ../vault-as-code/registry \
+credentials-bot-manager secret sync \
+  --registry ../credentials-registry \
   --cluster app-cluster \
   --dry-run
 
 # Apply live to Kubernetes cluster
-platform-controller secret sync \
-  --registry ../vault-as-code/registry \
+credentials-bot-manager secret sync \
+  --registry ../credentials-registry \
   --cluster app-cluster \
   --kubeconfig ~/.kube/config \
   --context k3d-app-cluster \
@@ -67,51 +67,18 @@ platform-controller secret sync \
 
 ---
 
-## 3. Registry Schema Specification
-
-Namespace definition file: `registry/clusters/<cluster>/<namespace>.yaml`:
-
-```yaml
-editors:
-  - dev.user
-viewers:
-  - qa.user
-
-secrets:
-  # External Secrets Operator (synced to Native K8s Secret in etcd)
-  es:
-    - app_config
-    - redis
-
-  # Secrets Store CSI Driver (RAM tmpfs mount only, zero etcd)
-  csi:
-    - payment_gateway
-    - database
-```
-
-> **Backward Compatibility:** If `secrets` is provided as a simple list `[item1, item2]`, it is automatically treated as `es` secrets.
-
----
-
-## 4. Build & Development (Dockerized)
-
-No local Go installation required. Build directly via Docker:
+## 3. Development & Build
 
 ```bash
-# Resolve dependencies
+# Clean and tidy dependencies
 make tidy
 
-# Build local binary (bin/platform-controller)
+# Build local binary
 make build
 
-# Build minimal container image (~20MB)
+# Run unit tests
+make test
+
+# Build container image
 make docker-build
 ```
-
----
-
-## 5. Security Principles
-
-- **Zero Secrets in Git:** TokenReviewer JWTs and CA certificates are never written to repository files or disk.
-- **Least Privilege (PoLP):** Every namespace receives a dedicated `SecretStore` bound to its own ServiceAccount role (`r-<cluster>-<namespace>`). Cross-namespace secret access is strictly blocked with HTTP 403.
-- **Decoupled Architecture:** Vault core configuration is managed via Terraform, while Kubernetes client synchronization is orchestrated dynamically by `platform-controller`.

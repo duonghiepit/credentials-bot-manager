@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/duonghiepit/platform-controller/pkg/model"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/model"
 	"gopkg.in/yaml.v3"
 )
 

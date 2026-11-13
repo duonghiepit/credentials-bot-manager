@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/duonghiepit/platform-controller/pkg/k8s"
-	"github.com/duonghiepit/platform-controller/pkg/vault"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/k8s"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/vault"
 	"github.com/spf13/cobra"
 )
 

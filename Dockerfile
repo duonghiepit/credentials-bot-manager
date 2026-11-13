@@ -17,7 +17,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
     -trimpath \
     -ldflags="-s -w -X main.version=1.0.0" \
-    -o /bin/platform-controller main.go
+    -o /bin/credentials-bot-manager main.go
 
 # ==============================================================================
 # Final Hardened Scratch Stage (Distroless / Zero Shell / Non-Root)
@@ -27,9 +27,9 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /etc/passwd.nonroot /etc/passwd
 COPY --from=builder /etc/group.nonroot /etc/group
-COPY --from=builder /bin/platform-controller /usr/local/bin/platform-controller
+COPY --from=builder /bin/credentials-bot-manager /usr/local/bin/credentials-bot-manager
 
 USER 65532:65532
 
-ENTRYPOINT ["/usr/local/bin/platform-controller"]
+ENTRYPOINT ["/usr/local/bin/credentials-bot-manager"]
 CMD ["--help"]

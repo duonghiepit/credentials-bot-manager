@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/duonghiepit/platform-controller/pkg/logger"
-	"github.com/duonghiepit/platform-controller/pkg/metrics"
-	"github.com/duonghiepit/platform-controller/pkg/model"
-	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/logger"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/metrics"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/model"
+	syncpkg "github.com/duonghiepit/credentials-bot-manager/pkg/sync"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 

@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/duonghiepit/platform-controller/pkg/logger"
-	"github.com/duonghiepit/platform-controller/pkg/model"
-	"github.com/duonghiepit/platform-controller/pkg/vault"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/logger"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/model"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/vault"
 )
 
 // ClusterJoinRequest payload for /api/v1/cluster/join.

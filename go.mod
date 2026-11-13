@@ -1,4 +1,4 @@
-module github.com/duonghiepit/platform-controller
+module github.com/duonghiepit/credentials-bot-manager
 
 go 1.24.0
 

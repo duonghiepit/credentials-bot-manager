@@ -12,12 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/duonghiepit/platform-controller/pkg/deployer"
-	"github.com/duonghiepit/platform-controller/pkg/k8s"
-	"github.com/duonghiepit/platform-controller/pkg/logger"
-	syncpkg "github.com/duonghiepit/platform-controller/pkg/sync"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/k8s"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/logger"
+	syncpkg "github.com/duonghiepit/credentials-bot-manager/pkg/sync"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"k8s.io/client-go/kubernetes"
 )
 
 // Config holds the configuration for the HTTP daemon server.
@@ -31,23 +29,17 @@ type Config struct {
 	VaultServer   string
 	AuthNamespace string
 	GitLabURL     string
-	GitLabToken   string
-	ClustersDir   string
-	DefaultBranch string
-	ArgoCDURL     string
-	ArgoCDToken   string
 }
 
 // Server implements the HTTP API daemon and background reconciler.
 type Server struct {
-	cfg           Config
-	k8sClient     *k8s.Client
-	applier       *syncpkg.Applier
-	deployManager *deployer.Manager
-	httpClient    *http.Client
-	server        *http.Server
-	wg            sync.WaitGroup
-	authTracker   *authAttemptTracker
+	cfg         Config
+	k8sClient   *k8s.Client
+	applier     *syncpkg.Applier
+	httpClient  *http.Client
+	server      *http.Server
+	wg          sync.WaitGroup
+	authTracker *authAttemptTracker
 
 	tokenMu     sync.RWMutex
 	activeToken string
@@ -62,24 +54,9 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	var applier *syncpkg.Applier
-	var k8sCore kubernetes.Interface
-	if k8sClient != nil {
-		if k8sClient.DynamicClient != nil {
-			applier = syncpkg.NewApplier(k8sClient.DynamicClient)
-		}
-		if k8sClient.Clientset != nil {
-			k8sCore = k8sClient.Clientset
-		}
+	if k8sClient != nil && k8sClient.DynamicClient != nil {
+		applier = syncpkg.NewApplier(k8sClient.DynamicClient)
 	}
-
-	deployMgr := deployer.NewManager(deployer.Config{
-		GitLabURL:     cfg.GitLabURL,
-		GitLabToken:   cfg.GitLabToken,
-		ClustersDir:   cfg.ClustersDir,
-		DefaultBranch: cfg.DefaultBranch,
-		ArgoCDURL:     cfg.ArgoCDURL,
-		ArgoCDToken:   cfg.ArgoCDToken,
-	}, k8sCore)
 
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -87,12 +64,11 @@ func NewServer(cfg Config) (*Server, error) {
 	httpClient := &http.Client{Transport: tr, Timeout: 10 * time.Second}
 
 	s := &Server{
-		cfg:           cfg,
-		k8sClient:     k8sClient,
-		applier:       applier,
-		deployManager: deployMgr,
-		httpClient:    httpClient,
-		authTracker:   newAuthAttemptTracker(),
+		cfg:         cfg,
+		k8sClient:   k8sClient,
+		applier:     applier,
+		httpClient:  httpClient,
+		authTracker: newAuthAttemptTracker(),
 	}
 
 	if err := s.ensureAuthToken(context.Background()); err != nil {
@@ -107,10 +83,6 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/v1/secret/sync", s.handleSecretSync)
 	mux.HandleFunc("/api/v1/secret/unmatched", s.handleSecretUnmatched)
 	mux.HandleFunc("/api/v1/auth/rotate-token", s.handleRotateToken)
-	mux.HandleFunc("/api/v1/deploy", s.handleDeployContainerImages)
-	mux.HandleFunc("/api/v1/deploy/status", s.handleReloadDeployStatus)
-	mux.HandleFunc("/configsManager/deployContainerImages", s.handleDeployContainerImages)
-	mux.HandleFunc("/configsManager/reloadDeployStatus", s.handleReloadDeployStatus)
 	mux.HandleFunc("/", s.handleNotFound)
 
 	authHandler := s.authMiddleware(mux)
@@ -139,7 +111,7 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.runReconciler(ctx)
 	}
 
-	log.Info("Starting HTTP daemon server",
+	log.Info("Starting Credentials Bot Manager HTTP server",
 		slog.Int("port", s.cfg.Port),
 		slog.String("vault_addr", s.cfg.VaultAddr),
 		slog.String("registry_path", s.cfg.RegistryPath),

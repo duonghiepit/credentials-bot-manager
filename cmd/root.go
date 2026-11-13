@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/duonghiepit/platform-controller/pkg/logger"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -18,9 +18,9 @@ var (
 
 // RootCmd represents the base command when called without any subcommands.
 var RootCmd = &cobra.Command{
-	Use:   "platform-controller",
-	Short: "Platform Controller — Cloud-Native Multi-Cluster & Secret Orchestrator",
-	Long: `Platform Controller is a lightweight, high-performance platform orchestrator.
+	Use:   "credentials-bot-manager",
+	Short: "Credentials Bot Manager — Cloud-Native Vault & Secret Orchestrator",
+	Long: `Credentials Bot Manager is a lightweight, high-performance platform orchestrator.
 It automates Kubernetes multi-cluster authentication handshakes with HashiCorp Vault
 and synchronizes External Secrets (ES) and Secrets Store CSI Driver (CSI) configurations.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {

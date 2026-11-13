@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/duonghiepit/platform-controller/pkg/model"
-	"github.com/duonghiepit/platform-controller/pkg/vault"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/model"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/vault"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"

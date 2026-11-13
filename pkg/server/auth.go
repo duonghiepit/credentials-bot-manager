@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/duonghiepit/platform-controller/pkg/logger"
+	"github.com/duonghiepit/credentials-bot-manager/pkg/logger"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
