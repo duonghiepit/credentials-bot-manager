@@ -26,6 +26,14 @@ const (
 	authLockoutWindow     = 1 * time.Minute
 )
 
+// authSecretName returns the configured secret name, falling back to the default.
+func (s *Server) authSecretName() string {
+	if s.cfg.AuthSecretName != "" {
+		return s.cfg.AuthSecretName
+	}
+	return defaultAuthSecretName
+}
+
 type authAttemptTracker struct {
 	mu       sync.Mutex
 	attempts map[string]*ipAttempt
@@ -139,7 +147,7 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	secret, err := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, defaultAuthSecretName, metav1.GetOptions{})
+	secret, err := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, s.authSecretName(), metav1.GetOptions{})
 	if err == nil && secret != nil && len(secret.Data[authSecretKey]) > 0 {
 		token := strings.TrimSpace(string(secret.Data[authSecretKey]))
 		s.tokenMu.Lock()
@@ -147,7 +155,7 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 		s.tokenMu.Unlock()
 		log.Info("Loaded existing API token from Kubernetes Secret",
 			slog.String("namespace", ns),
-			slog.String("secret", defaultAuthSecretName),
+			slog.String("secret", s.authSecretName()),
 		)
 		return nil
 	}
@@ -159,7 +167,7 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 
 	newSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      defaultAuthSecretName,
+			Name:      s.authSecretName(),
 			Namespace: ns,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "platform-controller",
@@ -174,7 +182,7 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 
 	_, err = s.k8sClient.Clientset.CoreV1().Secrets(ns).Create(ctx, newSecret, metav1.CreateOptions{})
 	if err != nil {
-		sec, getErr := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, defaultAuthSecretName, metav1.GetOptions{})
+		sec, getErr := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, s.authSecretName(), metav1.GetOptions{})
 		if getErr == nil && len(sec.Data[authSecretKey]) > 0 {
 			s.tokenMu.Lock()
 			s.activeToken = strings.TrimSpace(string(sec.Data[authSecretKey]))
@@ -197,7 +205,7 @@ func (s *Server) ensureAuthToken(ctx context.Context) error {
 
 	log.Info("Successfully generated initial API token and persisted to Kubernetes Secret",
 		slog.String("namespace", ns),
-		slog.String("secret", defaultAuthSecretName),
+		slog.String("secret", s.authSecretName()),
 	)
 	return nil
 }
@@ -226,7 +234,7 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.k8sClient != nil && s.k8sClient.Clientset != nil {
-		secret, err := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, defaultAuthSecretName, metav1.GetOptions{})
+		secret, err := s.k8sClient.Clientset.CoreV1().Secrets(ns).Get(ctx, s.authSecretName(), metav1.GetOptions{})
 		if err == nil && secret != nil {
 			if secret.Data == nil {
 				secret.Data = make(map[string][]byte)
@@ -241,7 +249,7 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 		} else {
 			newSecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      defaultAuthSecretName,
+					Name:      s.authSecretName(),
 					Namespace: ns,
 					Labels: map[string]string{
 						"app.kubernetes.io/name":      "platform-controller",
@@ -268,14 +276,14 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("API token successfully rotated",
 		slog.String("namespace", ns),
-		slog.String("secret", defaultAuthSecretName),
+		slog.String("secret", s.authSecretName()),
 	)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":     "success",
 		"message":    "API token rotated and persisted to Kubernetes Secret",
-		"secret_ref": fmt.Sprintf("%s/%s", ns, defaultAuthSecretName),
+		"secret_ref": fmt.Sprintf("%s/%s", ns, s.authSecretName()),
 	})
 }
 

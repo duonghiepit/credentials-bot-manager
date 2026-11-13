@@ -12,13 +12,14 @@ import (
 )
 
 var (
-	serverPort          int
-	serverRegistry      string
-	serverCluster       string
-	serverSyncInterval  time.Duration
-	serverVaultServer   string
-	serverAuthNamespace string
-	serverGitLabURL     string
+	serverPort           int
+	serverRegistry       string
+	serverCluster        string
+	serverSyncInterval   time.Duration
+	serverVaultServer    string
+	serverAuthNamespace  string
+	serverAuthSecretName string
+	serverGitLabURL      string
 )
 
 var serverCmd = &cobra.Command{
@@ -45,6 +46,7 @@ func init() {
 	serverCmd.Flags().StringVar(&serverVaultServer, "vault-server", "http://vault.external-secrets.svc:8200", "Vault server endpoint reachable within K8s")
 	serverCmd.Flags().StringVar(&serverGitLabURL, "gitlab-url", "https://infra-gitlab.devops.pro", "GitLab API Base URL")
 	serverCmd.Flags().StringVar(&serverAuthNamespace, "auth-namespace", "platform-system", "Kubernetes namespace where auth token secret is persisted (ArgoCD style)")
+	serverCmd.Flags().StringVar(&serverAuthSecretName, "auth-secret-name", "platform-controller-auth", "Kubernetes Secret name used to persist the auth token")
 
 	RootCmd.AddCommand(serverCmd)
 }
@@ -54,15 +56,16 @@ func runServer(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	cfg := server.Config{
-		Port:          serverPort,
-		RegistryPath:  serverRegistry,
-		VaultAddr:     vaultAddr,
-		VaultToken:    vaultToken,
-		SyncInterval:  serverSyncInterval,
-		ClusterName:   serverCluster,
-		VaultServer:   serverVaultServer,
-		AuthNamespace: serverAuthNamespace,
-		GitLabURL:     serverGitLabURL,
+		Port:           serverPort,
+		RegistryPath:   serverRegistry,
+		VaultAddr:      vaultAddr,
+		VaultToken:     vaultToken,
+		SyncInterval:   serverSyncInterval,
+		ClusterName:    serverCluster,
+		VaultServer:    serverVaultServer,
+		AuthNamespace:  serverAuthNamespace,
+		AuthSecretName: serverAuthSecretName,
+		GitLabURL:      serverGitLabURL,
 	}
 
 	srv, err := server.NewServer(cfg)

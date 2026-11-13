@@ -27,8 +27,9 @@ type Config struct {
 	SyncInterval  time.Duration
 	ClusterName   string
 	VaultServer   string
-	AuthNamespace string
-	GitLabURL     string
+	AuthNamespace  string
+	AuthSecretName string
+	GitLabURL      string
 }
 
 // Server implements the HTTP API daemon and background reconciler.
