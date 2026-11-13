@@ -149,29 +149,69 @@ func (m *Manager) GetEventStatus(eventID string) (*DeployEvent, bool) {
 		return nil, false
 	}
 
-	// If pipeline URL is not yet resolved to an exact pipeline, try resolving via GitLab API
-	if ev.PipelineID == 0 && ev.CommitSHA != "" && m.cfg.GitLabToken != "" && m.cfg.GitLabURL != "" {
+	// While event is in StatusRunning (WAITING_FOR_UPDATE in KV), poll GitLab for downstream sub-pipeline status
+	if ev.DeployStatus == StatusRunning && ev.CommitSHA != "" && m.cfg.GitLabToken != "" && m.cfg.GitLabURL != "" {
 		targetProj := ev.TargetCluster
 		if !strings.Contains(targetProj, "/") {
 			targetProj = "clusters/" + targetProj
 		}
 		encodedProject := url.PathEscape(targetProj)
-		pipeReqURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines?sha=%s", m.cfg.GitLabURL, encodedProject, ev.CommitSHA)
-		pipeReq, err := http.NewRequest(http.MethodGet, pipeReqURL, nil)
-		if err == nil {
-			pipeReq.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
-			if pipeResp, err := m.httpClient.Do(pipeReq); err == nil {
-				if pipeResp.StatusCode == http.StatusOK {
-					var pipelines []struct {
-						ID     int    `json:"id"`
-						WebURL string `json:"web_url"`
+
+		// 1. Discover pipeline ID if not yet cached
+		if ev.PipelineID == 0 {
+			pipeReqURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines?sha=%s", m.cfg.GitLabURL, encodedProject, ev.CommitSHA)
+			req, err := http.NewRequest(http.MethodGet, pipeReqURL, nil)
+			if err == nil {
+				req.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
+				if resp, err := m.httpClient.Do(req); err == nil {
+					if resp.StatusCode == http.StatusOK {
+						var list []struct {
+							ID     int    `json:"id"`
+							Status string `json:"status"`
+							WebURL string `json:"web_url"`
+						}
+						if json.NewDecoder(resp.Body).Decode(&list) == nil && len(list) > 0 {
+							ev.PipelineID = list[0].ID
+							ev.PipelineURL = list[0].WebURL
+						}
 					}
-					if json.NewDecoder(pipeResp.Body).Decode(&pipelines) == nil && len(pipelines) > 0 {
-						ev.PipelineID = pipelines[0].ID
-						ev.PipelineURL = pipelines[0].WebURL
-					}
+					resp.Body.Close()
 				}
-				pipeResp.Body.Close()
+			}
+		}
+
+		if ev.PipelineID == 0 {
+			ev.DeployMessage = "Please wait the CI/CD sub-pipeline."
+		} else {
+			// 2. Poll the sub-pipeline status
+			singlePipeURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d", m.cfg.GitLabURL, encodedProject, ev.PipelineID)
+			req, err := http.NewRequest(http.MethodGet, singlePipeURL, nil)
+			if err == nil {
+				req.Header.Set("PRIVATE-TOKEN", m.cfg.GitLabToken)
+				if resp, err := m.httpClient.Do(req); err == nil {
+					if resp.StatusCode == http.StatusOK {
+						var pipeDetail struct {
+							ID     int    `json:"id"`
+							Status string `json:"status"`
+							WebURL string `json:"web_url"`
+						}
+						if json.NewDecoder(resp.Body).Decode(&pipeDetail) == nil {
+							ev.PipelineURL = pipeDetail.WebURL
+							switch pipeDetail.Status {
+							case "success", "manual":
+								ev.DeployStatus = StatusSuccess
+								ev.DeployMessage = fmt.Sprintf("Deploy succeed! You can view the CI/CD sub-pipeline here `%s`", pipeDetail.WebURL)
+							case "failed", "canceled", "skipped":
+								ev.DeployStatus = StatusFailed
+								ev.DeployMessage = fmt.Sprintf("Deploy failed! Please contact the platform team to support this case or debug CI/CD sub-pipeline here `%s`", pipeDetail.WebURL)
+							default:
+								// running, pending, preparing, waiting_for_resource, created
+								ev.DeployMessage = fmt.Sprintf("CI/CD sub-pipeline status is %s. You can view here `%s`", pipeDetail.Status, pipeDetail.WebURL)
+							}
+						}
+					}
+					resp.Body.Close()
+				}
 			}
 		}
 	}
@@ -224,7 +264,7 @@ func (m *Manager) executeDeployment(eventID string, req DeployRequest, imageRepo
 		}
 	}
 
-	// 3. Monitor K8s Rollout (only if deploying to local platform cluster)
+	// 3. Monitor deployment completion
 	isLocalCluster := req.TargetCluster == "" || strings.Contains(req.TargetCluster, "platform") || strings.Contains(req.TargetCluster, "local")
 	if isLocalCluster && m.k8sClient != nil && req.Namespace != "" && req.AppName != "" {
 		m.updateEventStatus(eventID, StatusRunning, fmt.Sprintf("Monitoring Kubernetes rollout for %s in %s...", req.AppName, req.Namespace))
@@ -233,16 +273,18 @@ func (m *Manager) executeDeployment(eventID string, req DeployRequest, imageRepo
 			m.updateEventStatus(eventID, StatusFailed, fmt.Sprintf("Rollout failed: %v", rolloutErr))
 			return
 		}
-	} else if !isLocalCluster {
-		log.Info("Target cluster is remote; GitOps commit applied for ArgoCD deployment",
-			slog.String("cluster", req.TargetCluster))
+		m.updateEventStatus(eventID, StatusSuccess, fmt.Sprintf("Successfully deployed %s:%s to %s", imageRepo, imageTag, req.TargetCluster))
+	} else {
+		log.Info("Target cluster is remote; GitOps commit applied, tracking downstream sub-pipeline via polling",
+			slog.String("cluster", req.TargetCluster),
+			slog.String("commitSha", func() string {
+				if patchResult != nil {
+					return patchResult.CommitSHA
+				}
+				return ""
+			}()))
+		m.updateEventStatus(eventID, StatusRunning, "Succeed commit to change new tags. Please wait a moment to start the CI/CD sub-pipeline and deploy the changes.")
 	}
-
-	successMsg := fmt.Sprintf("Successfully deployed %s:%s to %s", imageRepo, imageTag, req.TargetCluster)
-	if patchResult != nil && patchResult.PipelineURL != "" {
-		successMsg = fmt.Sprintf("Successfully deployed %s:%s to %s | Pipeline: %s", imageRepo, imageTag, req.TargetCluster, patchResult.PipelineURL)
-	}
-	m.updateEventStatus(eventID, StatusSuccess, successMsg)
 }
 
 func (m *Manager) updateEventStatus(eventID string, status DeployStatus, msg string) {
